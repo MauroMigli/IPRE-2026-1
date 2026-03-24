@@ -3,6 +3,7 @@ from statsmodels.tsa.api import VAR
 
 
 # Metodo AIC para encontrar p
+# minimiza valores del arreglo AIC
 def AIC(data, n_epochs, m, n):
     lags = range(1, 21)
     AIC = np.zeros(20)

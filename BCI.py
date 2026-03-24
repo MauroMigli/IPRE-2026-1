@@ -1,14 +1,8 @@
 import numpy as np
 import mne
 import matplotlib.pyplot as plt
-from sys import argv
-from statsmodels.tsa.api import VAR
 from mne_connectivity.vector_ar import vector_auto_regression
 from utils import AIC, V_epoch
-
-# PENDING: Hacer interfaz para data entry (?)
-#          y escoger epocas/bandas de frecuencia.
-
 
 path = "./data/A01E.gdf"
 raw = mne.io.read_raw_gdf(path, preload=True)
@@ -43,7 +37,9 @@ n_epochs, n_nodes, n_samples = data.shape
 
 
 # 3. Obtener orden del modelo (AIC)
-p = 20 #AIC(data, n_epochs, n_nodes, n_samples)
+# metodo para obtener el orden del modelo
+# no estoy seguro si es el mejor, hay bastantes
+p = 15 #AIC(data, n_epochs, n_nodes, n_samples)
 
 # 4. Calculo matrices de conectividad
 con = vector_auto_regression(data, lags=p)
@@ -63,6 +59,7 @@ fs = [high_pass + i * 0.1  for i in range(n_fs)]
 H = np.zeros((n_epochs, n_fs, n_nodes, n_nodes), dtype=complex)
 S = np.zeros((n_epochs, n_fs, n_nodes, n_nodes), dtype=complex)
 dDTF = np.zeros((n_epochs, n_fs, n_nodes, n_nodes))
+
 
 # 4.1 Obtener H y S
 # PENDING: En vez de hacer analisis para todas las epocas 
@@ -100,7 +97,6 @@ for epoch in range(1): # range(epochs):
     # 5. Plot basico
 
     for f in range(n_fs):
-
         plt.figure(figsize=(8, 6))
         plt.imshow(dDTF[epoch][f], cmap='viridis', aspect='auto') 
 

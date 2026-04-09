@@ -2,9 +2,8 @@ import time
 import numpy as np
 import mne
 import matplotlib.pyplot as plt
-import plotly.graph_objects as go
-import plotly.offline as pyo
 import parameters
+import plot
 from statsmodels.tsa.api import VAR
 from scipy import stats
 
@@ -26,7 +25,7 @@ def create_epochs_from_raw(raw: mne.io.BaseRaw) -> mne.Epochs:
     )
     return epochs
 
-def p_histogram(data_epochs, epochs_lim: int, p_max=20):
+def p_histogram(data_epochs, epochs_lim: int, p_max=25):
     """ Grafica un histograma sobre todas las epocas
         y sobre todos los modelos para cada (i, j) nodos 
         distintos (46 * 45) / 2 en total. """ 
@@ -37,7 +36,7 @@ def p_histogram(data_epochs, epochs_lim: int, p_max=20):
     # Lista plana para guardar cada 'p' óptimo encontrado individualmente
     optimal_ps = []
 
-    print(f"Calculando rezagos óptimos (AIC) hasta p_max={p_max}...")
+    print(f"Calculando rezagos óptimos (BIC) hasta p_max={p_max}...")
     
     for epoch in range(n_epochs):
         print(f"Epoch: ---- {epoch + 1}/{n_epochs} ----")
@@ -51,7 +50,7 @@ def p_histogram(data_epochs, epochs_lim: int, p_max=20):
                 try:
                     order_selection = model.select_order(maxlags=p_max)
                     
-                    best_p = order_selection.aic
+                    best_p = order_selection.bic
                     
                     if best_p == 0:
                         best_p = 1
@@ -70,7 +69,7 @@ def p_histogram(data_epochs, epochs_lim: int, p_max=20):
     plt.axvline(moda, color='red', linestyle='dashed', linewidth=2, label=f'Moda (Voto mayoritario): {moda}')
     plt.axvline(media, color='green', linestyle='dashed', linewidth=2, label=f'Media: {media:.2f}')
     
-    plt.title(f'Distribución de Rezagos Óptimos (p) según AIC\nTotal de modelos bivariados evaluados: {len(optimal_ps)}')
+    plt.title(f'Distribución de Rezagos Óptimos (p) según BIC\nTotal de modelos bivariados evaluados: {len(optimal_ps)}')
     plt.xlabel('Orden del Modelo (p)')
     plt.ylabel('Frecuencia (Cantidad de Pares x Épocas)')
     plt.xticks(range(1, p_max + 1))
@@ -94,7 +93,6 @@ def process_dDTF(data_epochs, sampling_freq: float, epochs_lim: int, p: int):
     
     dDTF_global = np.zeros((n_epochs, n_fs, n_channels, n_channels))
 
-    start_time = time.perf_counter()
     for epoch in range(n_epochs):
         data_ep = data_epochs[epoch] 
         print(f"Epoch: ---- {epoch} ----")
@@ -132,11 +130,28 @@ def process_dDTF(data_epochs, sampling_freq: float, epochs_lim: int, p: int):
 
 
 if __name__ == "__main__":
-    raw_ne: mne.io.Raw = mne.io.read_raw_eeglab(parameters.FILE_NE, preload=True)
-    epochs_ne = create_epochs_from_raw(raw_ne)
-    data_epochs_ne = epochs_ne.get_data(copy=False)
-    sf = raw_ne.info['sfreq']
+    epochs_hb: mne.BaseEpochs = mne.io.read_epochs_eeglab(parameters.HEARTBEAT[0])
+    epochs_si: mne.BaseEpochs = mne.io.read_epochs_eeglab(parameters.SILENCE[0])
 
-    # Matriz global de dDTF, sobre una cantidad chica de epochs
-    optimal_lag = p_histogram(data_epochs_ne, epochs_lim=5)
-    dDTF = process_dDTF(data_epochs_ne, sampling_freq=sf, p=optimal_lag)
+    for L_FREQ, H_FREQ in parameters.F_BANDS:
+        filtered_hb = epochs_hb.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ)
+        filtered_si = epochs_si.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ)
+
+        data_epochs_hb = filtered_hb.get_data(copy=False)
+        data_epochs_si = filtered_si.get_data(copy=False)
+
+        sf = epochs_hb.info['sfreq'] # Actualmente, sf = 500hz
+        lag_hb = p_histogram(data_epochs_hb, epochs_lim=3)
+        print(f"Para HB con rango {L_FREQ, H_FREQ}: p = {lag_hb}")
+        lag_si = p_histogram(data_epochs_si, epochs_lim=3)
+        print(f"Para SI con rango {L_FREQ, H_FREQ}: p = {lag_si}")
+        
+
+"""     dDTF = process_dDTF(data_epochs_si, sampling_freq=sf, p=optimal_lag)
+"""
+
+"""     epochs_ne = create_epochs_from_raw(raw_ne)
+    
+    
+
+ """

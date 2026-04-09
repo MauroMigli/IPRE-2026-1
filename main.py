@@ -1,4 +1,4 @@
-import time
+from pathlib import Path
 import numpy as np
 import mne
 import matplotlib.pyplot as plt
@@ -103,13 +103,13 @@ def process_dDTF(data_epochs, sampling_freq: float, epochs_lim: int, p: int):
                 # 1. Ajuste del modelo Bivariado
                 pair_data = np.vstack((data_ep[i], data_ep[j])).T
                 model = VAR(pair_data)
-                fitted = model.fit(maxlags=parameters.MVAR_LAGS)
+                fitted = model.fit(maxlags=p)
                 
                 A_pair = fitted.coefs
                 V_pair = fitted.sigma_u
                 
                 # 2. Vectorización de frecuencias (Mucho más rápido)
-                k_lags = np.arange(1, parameters.MVAR_LAGS + 1)
+                k_lags = np.arange(1, p + 1)
                 exp_matrix = np.exp(-2j * np.pi * np.outer(fs, k_lags) * dt)
                 A_f_all = np.eye(2, dtype=complex) - np.einsum('f p, p i j -> f i j', exp_matrix, A_pair)
                 
@@ -130,28 +130,56 @@ def process_dDTF(data_epochs, sampling_freq: float, epochs_lim: int, p: int):
 
 
 if __name__ == "__main__":
-    epochs_hb: mne.BaseEpochs = mne.io.read_epochs_eeglab(parameters.HEARTBEAT[0])
-    epochs_si: mne.BaseEpochs = mne.io.read_epochs_eeglab(parameters.SILENCE[0])
-
-    for L_FREQ, H_FREQ in parameters.F_BANDS:
-        filtered_hb = epochs_hb.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ)
-        filtered_si = epochs_si.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ)
-
-        data_epochs_hb = filtered_hb.get_data(copy=False)
-        data_epochs_si = filtered_si.get_data(copy=False)
-
-        sf = epochs_hb.info['sfreq'] # Actualmente, sf = 500hz
-        lag_hb = p_histogram(data_epochs_hb, epochs_lim=3)
-        print(f"Para HB con rango {L_FREQ, H_FREQ}: p = {lag_hb}")
-        lag_si = p_histogram(data_epochs_si, epochs_lim=3)
-        print(f"Para SI con rango {L_FREQ, H_FREQ}: p = {lag_si}")
+    Path("plots").mkdir(exist_ok=True)
+    
+    # Asumimos que las listas HEARTBEAT y SILENCE están ordenadas y corresponden al mismo infante
+    for hb_file, si_file in zip(parameters.HEARTBEAT, parameters.SILENCE):
+        print(f"\nProcesando par: {Path(hb_file).name} vs {Path(si_file).name}")
         
+        epochs_hb = mne.io.read_epochs_eeglab(hb_file)
+        epochs_si = mne.io.read_epochs_eeglab(si_file)
+        
+        ch_names = epochs_hb.ch_names
+        sf = epochs_hb.info['sfreq']
+        coords_3d = plot.get_3d_positions(parameters.ELP_FILE, ch_names)
 
-"""     dDTF = process_dDTF(data_epochs_si, sampling_freq=sf, p=optimal_lag)
-"""
+        for L_FREQ, H_FREQ in parameters.F_BANDS:
+            print(f"\n--- Banda de frecuencia: {L_FREQ} - {H_FREQ} Hz ---")
+            
+            # Es necesario actualizar variables globales si process_dDTF y p_histogram las usan
+            parameters.L_FREQ = L_FREQ
+            parameters.H_FREQ = H_FREQ
 
-"""     epochs_ne = create_epochs_from_raw(raw_ne)
-    
-    
+            filtered_hb = epochs_hb.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ, verbose=False)
+            filtered_si = epochs_si.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ, verbose=False)
 
- """
+            data_epochs_hb = filtered_hb.get_data(copy=False)
+            data_epochs_si = filtered_si.get_data(copy=False)
+
+            # Obtener lag óptimo (computado en un subconjunto de épocas)
+            opt_ps_hb = p_histogram(data_epochs_hb, epochs_lim=3)
+            opt_ps_si = p_histogram(data_epochs_si, epochs_lim=3)
+            
+            p_hb = int(stats.mode(opt_ps_hb, keepdims=True)[0][0]) if opt_ps_hb else parameters.MVAR_LAGS
+            p_si = int(stats.mode(opt_ps_si, keepdims=True)[0][0]) if opt_ps_si else parameters.MVAR_LAGS
+            
+            print(f"p óptimo -> HB: {p_hb}, SI: {p_si}")
+
+            # Calcular dDTF en todas las épocas usando el p óptimo
+            print("Calculando dDTF para Heartbeat...")
+            dDTF_hb = process_dDTF(data_epochs_hb, sampling_freq=sf, epochs_lim=data_epochs_hb.shape[0], p=p_hb)
+            
+            print("Calculando dDTF para Silencio...")
+            dDTF_si = process_dDTF(data_epochs_si, sampling_freq=sf, epochs_lim=data_epochs_si.shape[0], p=p_si)
+
+            # Promediar sobre el eje de frecuencias (axis=1) para obtener la media de la banda por época
+            mean_band_dDTF_hb = np.mean(dDTF_hb, axis=1) # Shape: (n_epochs, n_channels, n_channels)
+            mean_band_dDTF_si = np.mean(dDTF_si, axis=1)
+
+            # T-test independiente sobre el eje de las épocas (axis=0)
+            print("Ejecutando T-Test comparativo (HB vs SI)...")
+            t_stat, p_values = stats.ttest_ind(mean_band_dDTF_hb, mean_band_dDTF_si, axis=0, equal_var=False)
+
+            # Exportar la visualización
+            filename = f"plots/net_{Path(hb_file).stem}_band_{L_FREQ}-{H_FREQ}.html"
+            plot.export_interactive_3d_network(coords_3d, p_values, ch_names, filename)

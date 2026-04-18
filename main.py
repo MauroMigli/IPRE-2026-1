@@ -145,10 +145,7 @@ if __name__ == "__main__":
 
         for L_FREQ, H_FREQ in parameters.F_BANDS:
             print(f"\n--- Banda de frecuencia: {L_FREQ} - {H_FREQ} Hz ---")
-            
-            # Es necesario actualizar variables globales si process_dDTF y p_histogram las usan
-            parameters.L_FREQ = L_FREQ
-            parameters.H_FREQ = H_FREQ
+
 
             filtered_hb = epochs_hb.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ, verbose=False)
             filtered_si = epochs_si.copy().filter(l_freq=L_FREQ, h_freq=H_FREQ, verbose=False)

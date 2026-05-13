@@ -1,4 +1,5 @@
 from pathlib import Path
+from numpy import arange
 
 HB_LIST = Path("data/F06_hb_sg").iterdir()
 SI_LIST = Path("data/F06_sisg").iterdir()
@@ -15,11 +16,16 @@ DROPPED_CHANNELS.append("Cz")
 
 EPOCH_DURATION_S = 0.5
 EPOCH_OVERLAP_S = 0
-F_BANDS = [
-    (0.5, 4.0),   # Delta
-    (4.0, 8.0),   # Theta
-    (8.0, 13.0),  # Alpha
-    (13.0, 30.0), # Beta
-    (30.0, 100.0) # Gamma
-]
+F_BANDS = {
+    "Delta": (0.5, 4.0),   # Delta
+    "Theta": (4.0, 8.0),   # Theta
+    "Alpha": (8.0, 12.0),  # Alpha
+    "Beta": (12.0, 30.0), # Beta
+    "Gamma": (30.0, 100.0) # Gamma
+}
 FREQ_STEP = 0.5
+F_MIN = min([b[0] for b in F_BANDS.values()])
+F_MAX = max([b[1] for b in F_BANDS.values()])
+FS_GLOBAL = arange(F_MIN, F_MAX + FREQ_STEP, FREQ_STEP)
+
+P_OPTIMO = 7

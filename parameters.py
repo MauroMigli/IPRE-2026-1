@@ -1,11 +1,11 @@
 from pathlib import Path
 from numpy import arange
 
-HB_LIST = Path("data/F06_hb_sg").iterdir()
-SI_LIST = Path("data/F06_sisg").iterdir()
+HB_DIR = Path("data/epch_heartbeat")
+SI_DIR = Path("data/epch_silence")
 
-HEARTBEAT = [str(file) for file in HB_LIST if file.suffix == ".set"]
-SILENCE = [str(file) for file in SI_LIST if file.suffix == ".set"]
+HEARTBEAT = [str(file) for file in HB_DIR.iterdir() if file.suffix == ".set"] if HB_DIR.exists() else []
+SILENCE = [str(file) for file in SI_DIR.iterdir() if file.suffix == ".set"] if SI_DIR.exists() else []
 ELP_FILE = "data/eeglab_65chanlocs.elp"
 
 DROPPED_CHANNELS_MATLAB = [1, 5, 8, 10, 17, 23, 29, 32, 35, 37, 39, 43, 47, 55, 61, 62, 63, 64]

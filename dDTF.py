@@ -21,7 +21,7 @@ def process_dDTF_global(data_epochs, sampling_freq: float, p: int):
     timer = time.time()
     for epoch in range(n_epochs):
         if epoch % 10 == 0:
-            print(f"  -> Procesando Epoch {epoch + 1}/{n_epochs}... ({timer - time.time():.2f} seg)")
+            print(f"  -> Procesando Epoch {epoch + 1}/{n_epochs}... ({time.time() - timer:.2f} seg)", flush=True)
         
         data_ep = data_epochs[epoch] 
 

@@ -147,14 +147,17 @@ if __name__ == "__main__":
     print("\n4. Generando visualizaciones...")
     os.makedirs("plots", exist_ok=True)
     
-    # Exportar red 3D interactiva
-    # Para el plot 3D general colapsamos tomando el mínimo p-valor posible por par de nodos a través de bandas y épocas
-    # para destacar las aristas que fueron significativas al menos en algún instante/banda.
+    # Guardar la matriz 4D completa y los canales para graficado interactivo posterior
+    np.save("plots/p_values_empiricos.npy", p_values_empiricos)
+    np.save("plots/channel_names.npy", np.array(global_ch_names, dtype=object))
+    print(" -> Matriz 4D y nombres de canales guardados en plots/ (.npy)")
+    
+    # Exportar red 3D interactiva de referencia (mínimo p-valor histórico)
     p_values_2d_min = np.min(p_values_empiricos, axis=(2, 3))
     
     coords_3d = html_plotter.get_3d_positions(parameters.ELP_FILE, global_ch_names)
     
-    print(" -> Exportando html_plotter interactivo...")
+    print(" -> Exportando html_plotter interactivo general (min p-value)...")
     html_plotter.export_interactive_3d_network(
         coords_3d, p_values_2d_min, global_ch_names,
         filename="plots/red_tfce_montecarlo_min.html",

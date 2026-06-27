@@ -141,7 +141,7 @@ if __name__ == "__main__":
     
     print("\n3. Calculando P-valores empíricos FWER...")
     # sum_{i=1}^{N_perms} I(sup_i >= TFCE(i,j,b,e)) / N_perms
-    p_values_empiricos = np.sum(supremos_nulos[:, None, None, None, None] >= tfce_real[None, ...], axis=0) / N_perms
+    p_values_empiricos = (np.sum(supremos_nulos[:, None, None, None, None] >= tfce_real[None, ...], axis=0) + 1) / (N_perms + 1)
     
     # ====== VISUALIZACION ======
     print("\n4. Generando visualizaciones...")

@@ -160,6 +160,169 @@ def export_interactive_3d_network(
     pyo.plot(fig, filename=filename, auto_open=False)
     print(f"Archivo interactivo generado exitosamente.")
 
+def export_slider_3d_network(
+    coords_3d,
+    p_values_3d,
+    channel_names,
+    filename="red_conectividad_3d_slider.html",
+    dropped_channels=None,
+    hide_isolated_nodes=False,
+):
+    print(f"\n--- Generando visualización interactiva con slider en {filename} ---")
+    
+    channel_names = list(channel_names)
+    coords_3d = np.asarray(coords_3d)
+    p_values_3d = np.asarray(p_values_3d)
+    
+    n_dest, n_src, n_epochs = p_values_3d.shape
+
+    keep_mask = np.ones(len(channel_names), dtype=bool)
+    if dropped_channels is not None:
+        dropped_set = set(dropped_channels)
+        keep_mask &= np.array([ch not in dropped_set for ch in channel_names], dtype=bool)
+
+    if hide_isolated_nodes:
+        # Un nodo se mantiene si tiene al menos una conexion significativa en ALGUNA epoca
+        sig_mask = (p_values_3d < 0.05) & ~np.isnan(p_values_3d)
+        for ep in range(n_epochs):
+            np.fill_diagonal(sig_mask[:, :, ep], False)
+        
+        active_nodes_src = sig_mask.any(axis=(0, 2))
+        active_nodes_dest = sig_mask.any(axis=(1, 2))
+        active_nodes = active_nodes_src | active_nodes_dest
+        keep_mask &= active_nodes
+
+    keep_idx = np.where(keep_mask)[0]
+    if keep_idx.size == 0:
+        print("No hay nodos válidos con conexiones significativas para graficar.")
+        return
+
+    coords_3d = coords_3d[keep_idx]
+    p_values_3d = p_values_3d[np.ix_(keep_idx, keep_idx)]
+    channel_names = [channel_names[i] for i in keep_idx]
+    n_ch = len(channel_names)
+    
+    xs, ys, zs = coords_3d[:, 0], coords_3d[:, 1], coords_3d[:, 2]
+    
+    nodos_trace = go.Scatter3d(
+        x=xs, y=ys, z=zs,
+        mode='markers+text',
+        marker=dict(size=6, color='black', opacity=0.7),
+        text=channel_names,
+        textposition="top center",
+        hoverinfo='text',
+        name='Electrodos'
+    )
+    
+    frames = []
+    base_traces = [nodos_trace]
+    
+    p_threshold = 0.05
+    highly_sig_threshold = 0.01
+
+    for ep in range(n_epochs):
+        p_val_ep = p_values_3d[:, :, ep]
+        
+        x_bg, y_bg, z_bg = [], [], []
+        x_or, y_or, z_or = [], [], []
+        x_rd, y_rd, z_rd = [], [], []
+        
+        cone_x, cone_y, cone_z = [], [], []
+        cone_u, cone_v, cone_w = [], [], []
+        cone_colors = []
+        
+        for i in range(n_ch):
+            for j in range(n_ch):
+                if i != j and not np.isnan(p_val_ep[i, j]):
+                    x_src, y_src, z_src = coords_3d[j]
+                    x_dest, y_dest, z_dest = coords_3d[i]
+                    pval = p_val_ep[i, j]
+                    
+                    if pval <= highly_sig_threshold:
+                        x_rd.extend([x_src, x_dest, None])
+                        y_rd.extend([y_src, y_dest, None])
+                        z_rd.extend([z_src, z_dest, None])
+                        color_val = 2
+                    elif pval <= p_threshold:
+                        x_or.extend([x_src, x_dest, None])
+                        y_or.extend([y_src, y_dest, None])
+                        z_or.extend([z_src, z_dest, None])
+                        color_val = 1
+                    else:
+                        x_bg.extend([x_src, x_dest, None])
+                        y_bg.extend([y_src, y_dest, None])
+                        z_bg.extend([z_src, z_dest, None])
+                        continue
+                    
+                    u, v, w = x_dest - x_src, y_dest - y_src, z_dest - z_src
+                    cone_x.append(x_src + u * 0.75)
+                    cone_y.append(y_src + v * 0.75)
+                    cone_z.append(z_src + w * 0.75)
+                    cone_u.append(u)
+                    cone_v.append(v)
+                    cone_w.append(w)
+                    cone_colors.append(color_val)
+                    
+        bg_trace = go.Scatter3d(x=x_bg, y=y_bg, z=z_bg, mode='lines', line=dict(color='grey', width=1), opacity=0.03, hoverinfo='none', showlegend=False)
+        or_trace = go.Scatter3d(x=x_or, y=y_or, z=z_or, mode='lines', line=dict(color='orange', width=4), hoverinfo='none', showlegend=False)
+        rd_trace = go.Scatter3d(x=x_rd, y=y_rd, z=z_rd, mode='lines', line=dict(color='darkred', width=6), hoverinfo='none', showlegend=False)
+        
+        cone_trace = go.Cone(
+            x=cone_x, y=cone_y, z=cone_z,
+            u=cone_u, v=cone_v, w=cone_w,
+            sizemode="absolute", sizeref=0.5, anchor="tip",
+            colorscale=[[0, 'orange'], [1, 'darkred']], cmin=1, cmax=2,
+            showscale=False, hoverinfo='none'
+        )
+        
+        frame_data = [nodos_trace, bg_trace, or_trace, rd_trace, cone_trace]
+        if ep == 0:
+            base_traces = frame_data
+            
+        frames.append(go.Frame(data=frame_data, name=str(ep)))
+
+    sliders = [dict(
+        active=0,
+        yanchor="top",
+        xanchor="left",
+        currentvalue=dict(font=dict(size=16), prefix="Época: ", visible=True, xanchor="right"),
+        transition=dict(duration=0, easing="linear"),
+        pad=dict(b=10, t=50),
+        len=0.9,
+        x=0.1,
+        y=0,
+        steps=[dict(
+            args=[[f.name], dict(frame=dict(duration=0, redraw=True), mode="immediate", transition=dict(duration=0))],
+            label=str(k),
+            method="animate"
+        ) for k, f in enumerate(frames)]
+    )]
+
+    layout = go.Layout(
+        title=f"Evolución Temporal de Red TFCE<br>Naranja: p <= {p_threshold} | Rojo Oscuro: p <= {highly_sig_threshold}",
+        scene=dict(
+            xaxis=dict(title='X', showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(title='Y', showgrid=False, zeroline=False, showticklabels=False),
+            zaxis=dict(title='Z', showgrid=False, zeroline=False, showticklabels=False),
+            camera=dict(eye=dict(x=1.5, y=1.5, z=1.5))
+        ),
+        margin=dict(l=0, r=0, b=0, t=50),
+        legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01),
+        updatemenus=[dict(
+            type="buttons", showactive=False,
+            y=0, x=0, xanchor="right", yanchor="top", pad=dict(t=50, r=10),
+            buttons=[
+                dict(label="Play", method="animate", args=[None, dict(frame=dict(duration=500, redraw=True), fromcurrent=True, transition=dict(duration=0))]),
+                dict(label="Pause", method="animate", args=[[None], dict(frame=dict(duration=0, redraw=False), mode="immediate", transition=dict(duration=0))])
+            ]
+        )],
+        sliders=sliders
+    )
+
+    fig = go.Figure(data=base_traces, layout=layout, frames=frames)
+    pyo.plot(fig, filename=filename, auto_open=False)
+    print(f"Archivo interactivo con slider generado exitosamente: {filename}")
+
 def get_3d_positions(elp_filepath, channel_names):
     with open(elp_filepath, 'r') as f:
         text = f.read()

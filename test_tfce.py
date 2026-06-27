@@ -106,70 +106,69 @@ if __name__ == "__main__":
     # Array final D de tamaño: (N_samples, epoch, band, dest, src)
     D_array = np.array([D[:global_min_epochs] for D in D_list])
     
-    print("\n1. Calculando Estadístico T y TFCE empírico original (Adyacencia Total)...")
+    print("\n1. Calculando Estadísticos T y TFCE empíricos originales...")
     t_map_raw = compute_t_map(D_array) # shape: (epoch, band, dest, src)
     T_map_4d = np.transpose(t_map_raw, (2, 3, 1, 0)) # a (dest, src, band, epoch)
     
     t0 = time.time()
-    tfce_real = tfce_transform(T_map_4d, spatial_adjacency='total', dh=0.1)
-    print(f" -> TFCE original completado en {time.time()-t0:.2f} s. (Supremo: {np.max(tfce_real):.3f})")
+    tfce_real_total = tfce_transform(T_map_4d, spatial_adjacency='total', dh=0.1)
+    print(f" -> TFCE original (Total) completado en {time.time()-t0:.2f} s. (Supremo: {np.max(tfce_real_total):.3f})")
     
-    print("\n2. Ejecutando Permutaciones Montecarlo (Sign Flips)...")
+    t0 = time.time()
+    tfce_real_null = tfce_transform(T_map_4d, spatial_adjacency='null', dh=0.1)
+    print(f" -> TFCE original (Nula) completado en {time.time()-t0:.2f} s. (Supremo: {np.max(tfce_real_null):.3f})")
+    
+    print("\n2. Ejecutando Permutaciones Montecarlo (Sign Flips) para Total y Nula...")
     N = len(instances)
-    # Generamos todas las 2^N permutaciones posibles
-    sign_flips = list(itertools.product([-1, 1], repeat=N))
-    N_perms = len(sign_flips)
-    print(f"Total de permutaciones a realizar: {N_perms}")
+    K_perms = 1000  # Número de iteraciones Montecarlo
+    if 2**N <= K_perms:
+        # Exhaustivo si el N es muy pequeño
+        sign_flips = list(itertools.product([-1, 1], repeat=N))
+        N_perms = len(sign_flips)
+        print(f"Universo manejable (2^{N} <= {K_perms}). Realizando permutación exhaustiva: {N_perms} iteraciones.")
+    else:
+        # Muestreo aleatorio
+        print(f"Universo grande (2^{N} > {K_perms}). Realizando muestreo Montecarlo aleatorio con {K_perms} iteraciones.")
+        sign_flips = np.random.choice([-1, 1], size=(K_perms, N))
+        N_perms = K_perms
     
-    supremos_nulos = []
+    supremos_nulos_total = []
+    supremos_nulos_null = []
     
+    t_perm_start = time.time()
     for p_idx, signs in enumerate(sign_flips):
         signs_arr = np.array(signs)[:, None, None, None, None]
         D_perm = D_array * signs_arr
         
         t_map_perm = compute_t_map(D_perm)
         T_map_perm_4d = np.transpose(t_map_perm, (2, 3, 1, 0))
-        tfce_perm = tfce_transform(T_map_perm_4d, spatial_adjacency='total', dh=0.1)
         
-        sup = np.max(tfce_perm)
-        supremos_nulos.append(sup)
+        # Calcular TFCE para ambos casos
+        tfce_perm_total = tfce_transform(T_map_perm_4d, spatial_adjacency='total', dh=0.1)
+        tfce_perm_null = tfce_transform(T_map_perm_4d, spatial_adjacency='null', dh=0.1)
+        
+        supremos_nulos_total.append(np.max(tfce_perm_total))
+        supremos_nulos_null.append(np.max(tfce_perm_null))
         
         if (p_idx + 1) % 10 == 0 or p_idx == N_perms - 1:
-            print(f"  -> Permutación {p_idx+1}/{N_perms} procesada. Max local: {sup:.3f}")
+            elapsed = time.time() - t_perm_start
+            print(f"  -> Permutación {p_idx+1}/{N_perms} procesada ({elapsed:.1f} s). Max Total: {np.max(tfce_perm_total):.3f} | Max Nulo: {np.max(tfce_perm_null):.3f}")
             
-    supremos_nulos = np.array(supremos_nulos)
+    supremos_nulos_total = np.array(supremos_nulos_total)
+    supremos_nulos_null = np.array(supremos_nulos_null)
     
-    print("\n3. Calculando P-valores empíricos FWER...")
-    # sum_{i=1}^{N_perms} I(sup_i >= TFCE(i,j,b,e)) / N_perms
-    p_values_empiricos = (np.sum(supremos_nulos[:, None, None, None, None] >= tfce_real[None, ...], axis=0) + 1) / (N_perms + 1)
+    print("\n3. Calculando P-valores empíricos FWER (Ajuste Davison-Hinkley)...")
+    p_values_total = (np.sum(supremos_nulos_total[:, None, None, None, None] >= tfce_real_total[None, ...], axis=0) + 1) / (N_perms + 1)
+    p_values_null = (np.sum(supremos_nulos_null[:, None, None, None, None] >= tfce_real_null[None, ...], axis=0) + 1) / (N_perms + 1)
     
     # ====== VISUALIZACION ======
     print("\n4. Generando visualizaciones...")
     os.makedirs("plots", exist_ok=True)
     
-    # Guardar la matriz 4D completa y los canales para graficado interactivo posterior
-    np.save("plots/p_values_empiricos.npy", p_values_empiricos)
+    # Guardar las matrices 4D completas y los canales para graficado interactivo posterior
+    np.save("plots/p_values_empiricos_total.npy", p_values_total)
+    np.save("plots/p_values_empiricos_null.npy", p_values_null)
     np.save("plots/channel_names.npy", np.array(global_ch_names, dtype=object))
-    print(" -> Matriz 4D y nombres de canales guardados en plots/ (.npy)")
-    
-    # Exportar red 3D interactiva de referencia (mínimo p-valor histórico)
-    p_values_2d_min = np.min(p_values_empiricos, axis=(2, 3))
-    
-    coords_3d = html_plotter.get_3d_positions(parameters.ELP_FILE, global_ch_names)
-    
-    print(" -> Exportando html_plotter interactivo general (min p-value)...")
-    html_plotter.export_interactive_3d_network(
-        coords_3d, p_values_2d_min, global_ch_names,
-        filename="plots/red_tfce_montecarlo_min.html",
-        dropped_channels=parameters.DROPPED_CHANNELS,
-        hide_isolated_nodes=False
-    )
-    
-    print(" -> Exportando Heatmaps 2D por banda y época...")
-    import plotter
-    plotter.plot_heatmaps_per_epoch_and_band(
-        p_values_empiricos, global_ch_names, 
-        prefix="tfce_montecarlo", base_dir="plots"
-    )
+    print(" -> Matrices 4D de p-valores y nombres de canales guardados en plots/ (.npy)")
     
     print("¡Proceso completado exitosamente!")

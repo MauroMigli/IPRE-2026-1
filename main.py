@@ -179,12 +179,16 @@ if __name__ == "__main__":
         print(f"TFCE Real calculado en {time.time()-t0:.2f}s (Max: {np.max(tfce_real):.3f})")
         
         # C) Montecarlo Paralelo usando Hilos (backend='threading') para compartir memoria nativamente y evitar OOM
-        print(f"Ejecutando {K_perms} permutaciones en paralelo (threading)...")
+        # Leemos los cores asignados por SLURM (por defecto 8) y limitamos a un máximo seguro de 4 para no saturar la RAM de 16G
+        slurm_cpus = int(os.environ.get('SLURM_CPUS_PER_TASK', 4))
+        n_workers = min(4, slurm_cpus)
+        
+        print(f"Ejecutando {K_perms} permutaciones en paralelo ({n_workers} hilos)...")
         t0 = time.time()
         
         seeds = np.random.randint(0, 1000000, size=K_perms)
         
-        supremos = Parallel(n_jobs=-1, backend='threading')(
+        supremos = Parallel(n_jobs=n_workers, backend='threading')(
             delayed(worker_permutation)(s, D_all, N_FT, N_total, adj_4d, 0.1)
             for s in seeds
         )

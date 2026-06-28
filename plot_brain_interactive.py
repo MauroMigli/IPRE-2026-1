@@ -19,9 +19,14 @@ def main():
     input_file = f"plots/p_values_empiricos_{args.adjacency}.npy"
     
     if not os.path.exists(input_file):
-        print(f"Error: No se encontró el archivo de entrada '{input_file}'.")
-        print("Asegúrate de que el pipeline principal haya terminado y guardado la matriz 4D.")
-        return
+        fallback_file = "plots/p_values_empiricos.npy"
+        if os.path.exists(fallback_file):
+            print(f"Advertencia: No se encontró '{input_file}'. Usando archivo de respaldo '{fallback_file}'.")
+            input_file = fallback_file
+        else:
+            print(f"Error: No se encontró '{input_file}' ni '{fallback_file}'.")
+            print("Asegúrate de que el pipeline principal haya terminado y guardado la matriz 4D.")
+            return
         
     print(f"Cargando matriz de p-valores ({args.adjacency}) desde '{input_file}'...")
     p_values_4d = np.load(input_file) # shape: (dest, src, band, epoch)

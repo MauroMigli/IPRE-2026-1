@@ -30,11 +30,34 @@ def tfce_to_pseudo_p(tfce_2d):
 
 def load_and_compute_ddtf(filepath):
     print(f" -> Procesando {os.path.basename(filepath)}...")
+    
+    # Crear directorio de caché si no existe
+    cache_dir = "data/ddtf_cache"
+    os.makedirs(cache_dir, exist_ok=True)
+    
+    # Definir rutas de caché para dDTF y canales
+    base_name = os.path.basename(filepath).replace(".set", "")
+    cache_file = os.path.join(cache_dir, f"{base_name}_ddtf.npy")
+    channels_file = os.path.join(cache_dir, f"{base_name}_channels.npy")
+    
+    if os.path.exists(cache_file) and os.path.exists(channels_file):
+        print(f"    [CACHÉ] Cargando dDTF desde caché para {base_name}...")
+        t0 = time.time()
+        ddtf = np.load(cache_file)
+        ch_names = np.load(channels_file, allow_pickle=True).tolist()
+        print(f"    [OK] dDTF cargado en {time.time()-t0:.2f} s")
+        return ddtf, ch_names
+        
     t0 = time.time()
     ep = clean_epochs(mne.io.read_epochs_eeglab(filepath, verbose=False))
     sf = ep.info['sfreq']
     ddtf = process_dDTF_global(ep.get_data(copy=False), sampling_freq=sf, p=parameters.P_OPTIMO)
-    print(f"    [OK] dDTF calculado en {time.time()-t0:.1f} s")
+    
+    # Guardar en caché
+    np.save(cache_file, ddtf)
+    np.save(channels_file, np.array(ep.ch_names, dtype=object))
+    
+    print(f"    [OK] dDTF calculado y guardado en caché en {time.time()-t0:.1f} s")
     return ddtf, ep.ch_names
 
 if __name__ == "__main__":
@@ -61,6 +84,21 @@ if __name__ == "__main__":
     bands = parameters.F_BANDS
     band_names = list(bands.keys())
     n_bands = len(band_names)
+    
+    print("\n--- Pre-calculando dDTF en paralelo (Caché) ---")
+    all_paths = []
+    for inst in instances:
+        all_paths.extend([
+            f"data/epch_heartbeat/epch_FT_hb_obs_{inst['FT']}.set",
+            f"data/epch_silence/epch_FT_si_obs_{inst['FT']}.set",
+            f"data/epch_heartbeat/epch_PT_hb_obs_{inst['PT']}.set",
+            f"data/epch_silence/epch_PT_si_obs_{inst['PT']}.set"
+        ])
+    
+    from joblib import Parallel, delayed
+    # Usamos n_jobs=-1 para ocupar todas las CPUs que SLURM haya asignado
+    Parallel(n_jobs=-1)(delayed(load_and_compute_ddtf)(p) for p in set(all_paths))
+    print("--- Pre-cálculo finalizado ---\n")
     
     for k, inst in enumerate(instances):
         print(f"\n--- Instancia {k+1}/{len(instances)}: FT {inst['FT']} vs PT {inst['PT']} ---")

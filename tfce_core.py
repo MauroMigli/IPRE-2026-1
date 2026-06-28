@@ -128,3 +128,25 @@ def tfce_transform(T_map, spatial_adjacency='null', dh=0.1, E=0.5, H=2.0):
         tfce_map += (e_h ** E) * (h ** H) * dh
         
     return tfce_map
+
+def compute_welch_t_map(D_A, D_B):
+    """
+    Calcula el estadístico T de Welch para dos muestras independientes con varianzas desiguales.
+    D_A y D_B son arrays donde el eje 0 representa a los sujetos.
+    Retorna el mapa T de la misma forma que D_A y D_B (sin el eje 0).
+    """
+    n1 = D_A.shape[0]
+    n2 = D_B.shape[0]
+    
+    mean1 = np.mean(D_A, axis=0)
+    mean2 = np.mean(D_B, axis=0)
+    
+    var1 = np.var(D_A, axis=0, ddof=1)
+    var2 = np.var(D_B, axis=0, ddof=1)
+    
+    se_diff = np.sqrt(var1 / n1 + var2 / n2)
+    
+    t_stat = np.divide(mean1 - mean2, se_diff, out=np.zeros_like(mean1), where=se_diff!=0)
+    t_stat = np.nan_to_num(t_stat)
+    
+    return np.abs(t_stat)  # Usamos el valor absoluto para contrastes bidireccionales en TFCE

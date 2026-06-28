@@ -4,9 +4,11 @@ import mne
 import os
 import gc
 from pathlib import Path
+from joblib import Parallel, delayed
 
-from tfce_core import compute_welch_t_map, tfce_transform
+from tfce_core import compute_welch_t_map, tfce_transform, get_spatial_adjacency_matrix, build_4d_graph
 from dDTF import process_dDTF_global
+from html_plotter import get_3d_positions
 import parameters
 
 def clean_epochs(epochs):
@@ -17,7 +19,6 @@ def clean_epochs(epochs):
     return epochs
 
 def load_and_compute_ddtf(filepath):
-    # Directorio de caché
     cache_dir = "data/ddtf_cache"
     os.makedirs(cache_dir, exist_ok=True)
     
@@ -30,7 +31,6 @@ def load_and_compute_ddtf(filepath):
         ch_names = np.load(channels_file, allow_pickle=True).tolist()
         return ddtf, ch_names
         
-    t0 = time.time()
     ep = clean_epochs(mne.io.read_epochs_eeglab(filepath, verbose=False))
     sf = ep.info['sfreq']
     ddtf = process_dDTF_global(ep.get_data(copy=False), sampling_freq=sf, p=parameters.P_OPTIMO)
@@ -39,55 +39,55 @@ def load_and_compute_ddtf(filepath):
     np.save(channels_file, np.array(ep.ch_names, dtype=object))
     return ddtf, ep.ch_names
 
+def worker_permutation(seed, D_all, N_FT, N_total, adj_4d, dh):
+    """Worker para procesar una permutación Montecarlo en paralelo."""
+    np.random.seed(seed) # Independencia
+    perm_indices = np.random.permutation(N_total)
+    D_FT_perm = D_all[perm_indices[:N_FT]]
+    D_PT_perm = D_all[perm_indices[N_FT:]]
+    
+    t_map_perm = compute_welch_t_map(D_FT_perm, D_PT_perm)
+    T_map_perm_4d = np.transpose(t_map_perm, (2, 3, 1, 0))
+    
+    tfce_perm = tfce_transform(T_map_perm_4d, spatial_adjacency=adj_4d, dh=dh)
+    return np.max(tfce_perm)
+
 if __name__ == "__main__":
     print("==========================================================================")
-    print(" IPRE-2026: Análisis Definitivo FT vs PT (Muestra Completa)")
-    print(" Test Welch 2-Muestras Independientes con Permutación Montecarlo (TFCE)")
+    print(" IPRE-2026: Pipeline TFCE Definitivo - Búsqueda de Radio R (Paralelo)")
     print("==========================================================================")
     
-    # 1. Parsear metadatos de sujetos desde la lista de parámetros
+    # 1. Parsear metadatos
     subjects = {}
     for f in parameters.HEARTBEAT + parameters.SILENCE:
         stem = Path(f).stem
         parts = stem.split('_')
-        # Ejemplo: epch_FT_hb_obs_069
         if len(parts) >= 5:
-            group = parts[1] # 'FT' o 'PT'
-            cond = parts[2]  # 'hb' o 'si'
-            kid_id = parts[4]
-            
+            group, cond, kid_id = parts[1], parts[2], parts[4]
             if kid_id not in subjects:
                 subjects[kid_id] = {'group': group, 'hb': None, 'si': None}
-            
             if cond == 'hb': subjects[kid_id]['hb'] = f
             elif cond == 'si': subjects[kid_id]['si'] = f
 
-    # Filtrar solo aquellos que tengan ambas condiciones
     valid_subjects = {k: v for k, v in subjects.items() if v['hb'] and v['si']}
-    print(f"\nSujetos válidos encontrados: {len(valid_subjects)}")
     
-    # 2. Precálculo paralelo con Joblib
+    # 2. Precálculo paralelo dDTF
     all_paths = []
     for info in valid_subjects.values():
         all_paths.extend([info['hb'], info['si']])
         
-    print(f"\n--- Iniciando Pre-cálculo paralelo de dDTF ({len(all_paths)} archivos) ---")
-    from joblib import Parallel, delayed
-    t_paralelo = time.time()
+    print(f"\n--- Verificando Caché dDTF ({len(all_paths)} archivos) ---")
     Parallel(n_jobs=-1)(delayed(load_and_compute_ddtf)(p) for p in set(all_paths))
-    print(f"--- Pre-cálculo finalizado en {time.time() - t_paralelo:.2f} segundos ---")
     
-    # 3. Cálculo de contrastes por sujeto: D_s = HB - SI
-    D_FT = []
-    D_PT = []
+    # 3. Cálculo de contrastes D_s = HB - SI
+    D_FT, D_PT = [], []
     global_ch_names = None
     
     bands = parameters.F_BANDS
     band_names = list(bands.keys())
-    n_bands = len(band_names)
     fs_global = parameters.FS_GLOBAL
     
-    print("\n--- Computando Contrastes HB-SI por sujeto y colapsando a bandas ---")
+    print("\n--- Computando Contrastes HB-SI por sujeto ---")
     for kid_id, info in valid_subjects.items():
         ddtf_hb, ch = load_and_compute_ddtf(info['hb'])
         if global_ch_names is None: global_ch_names = ch
@@ -97,11 +97,10 @@ if __name__ == "__main__":
         D_s = ddtf_hb[:min_ep] - ddtf_si[:min_ep]
         
         n_ep, _, n_dest, n_src = D_s.shape
-        D_s_bands = np.zeros((n_ep, n_bands, n_dest, n_src))
+        D_s_bands = np.zeros((n_ep, len(band_names), n_dest, n_src))
         
         for b_idx, b_name in enumerate(band_names):
-            f_min, f_max = bands[b_name]
-            freq_mask = (fs_global >= f_min) & (fs_global <= f_max)
+            freq_mask = (fs_global >= bands[b_name][0]) & (fs_global <= bands[b_name][1])
             if np.any(freq_mask):
                 D_s_bands[:, b_idx, :, :] = np.mean(D_s[:, freq_mask, :, :], axis=1)
                 
@@ -109,77 +108,86 @@ if __name__ == "__main__":
         elif info['group'] == 'PT': D_PT.append(D_s_bands)
         
         del ddtf_hb, ddtf_si, D_s, D_s_bands
-        
     gc.collect()
     
-    # Unificar dimensión temporal (épocas) globalmente
-    print("\n--- Unificando dimensiones temporales ---")
+    # Unificar temporalidad
     global_min_epochs = min([len(D) for D in D_FT] + [len(D) for D in D_PT])
-    print(f"Truncando a un mínimo global de {global_min_epochs} épocas.")
+    D_FT_arr = np.array([D[:global_min_epochs] for D in D_FT]) # (53, ep, b, dest, src)
+    D_PT_arr = np.array([D[:global_min_epochs] for D in D_PT]) # (27, ep, b, dest, src)
     
-    D_FT_arr = np.array([D[:global_min_epochs] for D in D_FT]) # (53, epoch, band, dest, src)
-    D_PT_arr = np.array([D[:global_min_epochs] for D in D_PT]) # (27, epoch, band, dest, src)
+    n_bands = len(band_names)
     
-    print(f"Muestras FT: {len(D_FT_arr)}")
-    print(f"Muestras PT: {len(D_PT_arr)}")
-    
-    # 4. Cálculo Estadístico Real
-    print("\n1. Calculando Test T (Welch) y TFCE para los datos originales...")
-    t_map_raw = compute_welch_t_map(D_FT_arr, D_PT_arr) # Absoluto para 2-colasy
-    T_map_4d = np.transpose(t_map_raw, (2, 3, 1, 0)) # (dest, src, band, epoch)
-    
-    t0 = time.time()
-    tfce_real_total = tfce_transform(T_map_4d, spatial_adjacency='total', dh=0.1)
-    tfce_real_null = tfce_transform(T_map_4d, spatial_adjacency='null', dh=0.1)
-    print(f" -> TFCE original completado en {time.time()-t0:.2f} s")
-    
-    # 5. Permutaciones Montecarlo (Label Swapping)
-    K_perms = 1000
-    N_FT = len(D_FT_arr)
-    N_PT = len(D_PT_arr)
-    N_total = N_FT + N_PT
+    # Preparación Matemática Base (Test de Welch T-map real)
+    t_map_raw = compute_welch_t_map(D_FT_arr, D_PT_arr)
+    T_map_real_4d = np.transpose(t_map_raw, (2, 3, 1, 0)) # (dest, src, band, epoch)
     
     D_all = np.concatenate([D_FT_arr, D_PT_arr], axis=0)
+    N_FT = len(D_FT_arr)
+    N_total = len(D_all)
+    K_perms = 1000
     
-    print(f"\n2. Ejecutando Permutaciones Montecarlo ({K_perms} iteraciones, Label Swapping)...")
+    # 4. Cálculo de Grilla de Radios (R)
+    print("\n--- Calculando Grilla de Radios (R) ---")
+    positions = get_3d_positions(parameters.ELP_FILE, global_ch_names)
+    coords = np.array([positions.get(ch, (0,0,0)) for ch in global_ch_names])
     
-    supremos_total = []
-    supremos_null = []
-    
-    t_perm_start = time.time()
-    for k in range(K_perms):
-        # Permutar etiquetas
-        perm_indices = np.random.permutation(N_total)
-        D_FT_perm = D_all[perm_indices[:N_FT]]
-        D_PT_perm = D_all[perm_indices[N_FT:]]
-        
-        # Test de Welch permutado
-        t_map_perm = compute_welch_t_map(D_FT_perm, D_PT_perm)
-        T_map_perm_4d = np.transpose(t_map_perm, (2, 3, 1, 0))
-        
-        tfce_perm_total = tfce_transform(T_map_perm_4d, spatial_adjacency='total', dh=0.1)
-        tfce_perm_null = tfce_transform(T_map_perm_4d, spatial_adjacency='null', dh=0.1)
-        
-        supremos_total.append(np.max(tfce_perm_total))
-        supremos_null.append(np.max(tfce_perm_null))
-        
-        if (k + 1) % 10 == 0 or k == K_perms - 1:
-            elapsed = time.time() - t_perm_start
-            print(f"  -> Iteración {k+1}/{K_perms} procesada ({elapsed:.1f} s). Max Total: {supremos_total[-1]:.3f} | Max Nulo: {supremos_null[-1]:.3f}")
+    # Encontrar distancia máxima entre electrodos (D_max)
+    max_dist = 0
+    for i in range(len(coords)):
+        for j in range(i+1, len(coords)):
+            d = np.linalg.norm(coords[i] - coords[j])
+            if d > max_dist: max_dist = d
             
-    # 6. Cálculo de p-valores FWER
-    print("\n3. Calculando P-valores empíricos FWER...")
-    supremos_total = np.array(supremos_total)
-    supremos_null = np.array(supremos_null)
+    # 10 valores de R desde 0 (Null) hasta max_dist (Total)
+    R_values = np.linspace(0, max_dist, 10)
+    print(f"Distancia máxima detectada: {max_dist:.2f}")
+    print(f"Radios a evaluar: {['%.2f'%r for r in R_values]}")
     
-    p_values_total = (np.sum(supremos_total[:, None, None, None, None] >= tfce_real_total[None, ...], axis=0) + 1) / (K_perms + 1)
-    p_values_null = (np.sum(supremos_null[:, None, None, None, None] >= tfce_real_null[None, ...], axis=0) + 1) / (K_perms + 1)
-    
-    # 7. Exportación
-    print("\n4. Generando archivos de salida...")
     os.makedirs("plots", exist_ok=True)
-    np.save("plots/p_values_empiricos_total.npy", p_values_total)
-    np.save("plots/p_values_empiricos_null.npy", p_values_null)
     np.save("plots/channel_names.npy", np.array(global_ch_names, dtype=object))
-    print(" -> Matrices .npy guardadas en plots/")
-    print("¡Proceso principal finalizado con éxito!")
+    
+    # BUCLE EXTERNO DE BÚSQUEDA R
+    for idx, R in enumerate(R_values):
+        print(f"\n==================================================")
+        print(f" Iniciando procesamiento para R={R:.2f} (Paso {idx+1}/10)")
+        print(f"==================================================")
+        
+        # A) Construir grafo disperso (uso de RAM ~ 1.5 GB por iteración)
+        t0 = time.time()
+        ch_adj = get_spatial_adjacency_matrix(global_ch_names, parameters.ELP_FILE, R)
+        adj_4d = build_4d_graph(ch_adj, n_bands, global_min_epochs)
+        print(f"Grafo de {adj_4d.nnz} conexiones construido en {time.time()-t0:.2f}s")
+        
+        # B) TFCE Real
+        t0 = time.time()
+        tfce_real = tfce_transform(T_map_real_4d, spatial_adjacency=adj_4d, dh=0.1)
+        print(f"TFCE Real calculado en {time.time()-t0:.2f}s (Max: {np.max(tfce_real):.3f})")
+        
+        # C) Montecarlo Paralelo (Las 1000 iteraciones se mandan a todos los cores)
+        print(f"Ejecutando {K_perms} permutaciones en paralelo (joblib)...")
+        t0 = time.time()
+        
+        # Generar seeds para evitar colisiones de RNG en workers
+        seeds = np.random.randint(0, 1000000, size=K_perms)
+        
+        # Ejecución paralela
+        supremos = Parallel(n_jobs=-1)(
+            delayed(worker_permutation)(s, D_all, N_FT, N_total, adj_4d, 0.1)
+            for s in seeds
+        )
+        print(f"Montecarlo Paralelo completado en {time.time()-t0:.2f}s")
+        
+        # D) P-valores
+        supremos = np.array(supremos)
+        p_values = (np.sum(supremos[:, None, None, None, None] >= tfce_real[None, ...], axis=0) + 1) / (K_perms + 1)
+        
+        # Guardado
+        out_file = f"plots/p_values_R_{idx}_val_{R:.2f}.npy"
+        np.save(out_file, p_values)
+        print(f"Resultados guardados en {out_file}")
+        
+        # E) Limpiar Memoria explícitamente para el próximo R
+        del adj_4d, ch_adj, supremos, p_values, tfce_real
+        gc.collect()
+
+    print("\n¡BÚSQUEDA INTENSIVA COMPLETADA CON ÉXITO!")

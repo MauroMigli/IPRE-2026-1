@@ -76,9 +76,14 @@ if __name__ == "__main__":
     for info in valid_subjects.values():
         all_paths.extend([info['hb'], info['si']])
         
+    def cache_ddtf(filepath):
+        load_and_compute_ddtf(filepath)
+        return None
+
     print(f"\n--- Verificando Caché dDTF ({len(all_paths)} archivos) ---")
-    # Limitamos n_jobs=1 en esta fase porque process_dDTF_global consume muchísima RAM (más de 16G si se usan muchos procesos)
-    Parallel(n_jobs=1)(delayed(load_and_compute_ddtf)(p) for p in set(all_paths))
+    # Limitamos n_jobs=1 en esta fase porque process_dDTF_global consume muchísima RAM
+    # Usamos cache_ddtf para retornar None y evitar que joblib acumule 18 GB de RAM
+    Parallel(n_jobs=1)(delayed(cache_ddtf)(p) for p in set(all_paths))
     
     # 3. Cálculo de contrastes D_s = HB - SI
     D_FT, D_PT = [], []

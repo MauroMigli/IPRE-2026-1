@@ -87,6 +87,11 @@ def tfce_transform(T_map, spatial_adjacency='null', dh=0.1, E=0.5, H=2.0):
     Si spatial_adjacency es un string ('total', 'null'), usa ndimage.label (método legado 2D).
     Si spatial_adjacency es un csr_matrix (Grafo de Kronecker), usa csgraph.connected_components (Nuevo).
     """
+    # Protegemos contra outliers estadísticos (ej. canales con varianza casi cero en permutaciones)
+    # Un valor T > 20.0 es astronómicamente significativo (p < 1e-15).
+    # Limitarlo a 20 evita que el bucle de integrales 'hs' intente dar miles de pasos y congele el servidor.
+    T_map = np.clip(T_map, 0, 20.0)
+    
     tfce_map = np.zeros_like(T_map, dtype=float)
     max_t = np.max(T_map)
     if max_t <= 0:

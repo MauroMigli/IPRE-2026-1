@@ -41,8 +41,8 @@ def load_and_compute_ddtf(filepath):
 
 def worker_permutation(seed, D_all, N_FT, N_total, adj_4d, dh):
     """Worker para procesar una permutación Montecarlo en paralelo."""
-    np.random.seed(seed) # Independencia
-    perm_indices = np.random.permutation(N_total)
+    rng = np.random.default_rng(seed) # Thread-safe Generator
+    perm_indices = rng.permutation(N_total)
     D_FT_perm = D_all[perm_indices[:N_FT]]
     D_PT_perm = D_all[perm_indices[N_FT:]]
     
@@ -157,30 +157,38 @@ if __name__ == "__main__":
         print(f" Iniciando procesamiento para R={R:.2f} (Paso {idx+1}/10)")
         print(f"==================================================")
         
-        # A) Construir grafo disperso (uso de RAM ~ 1.5 GB por iteración)
+        # A) Construir grafo disperso o usar atajos optimizados
         t0 = time.time()
         ch_adj = get_spatial_adjacency_matrix(global_ch_names, parameters.ELP_FILE, R)
-        adj_4d = build_4d_graph(ch_adj, n_bands, global_min_epochs)
-        print(f"Grafo de {adj_4d.nnz} conexiones construido en {time.time()-t0:.2f}s")
+        
+        # Atajo 1: Si R es 0, es equivalente a la adyacencia nula
+        if R == 0:
+            adj_4d = 'null'
+            print("Radio R=0 detectado. Usando optimización 'null' (0 bytes en RAM).")
+        # Atajo 2: Si todos los canales están conectados, es equivalente a la adyacencia total
+        elif np.all(ch_adj):
+            adj_4d = 'total'
+            print("El radio R conecta todos los canales de la red. Usando optimización 'total' (0 bytes en RAM).")
+        else:
+            adj_4d = build_4d_graph(ch_adj, n_bands, global_min_epochs)
+            print(f"Grafo de {adj_4d.nnz} conexiones construido en {time.time()-t0:.2f}s")
         
         # B) TFCE Real
         t0 = time.time()
         tfce_real = tfce_transform(T_map_real_4d, spatial_adjacency=adj_4d, dh=0.1)
         print(f"TFCE Real calculado en {time.time()-t0:.2f}s (Max: {np.max(tfce_real):.3f})")
         
-        # C) Montecarlo Paralelo (Las 1000 iteraciones se mandan a todos los cores)
-        print(f"Ejecutando {K_perms} permutaciones en paralelo (joblib)...")
+        # C) Montecarlo Paralelo usando Hilos (backend='threading') para compartir memoria nativamente y evitar OOM
+        print(f"Ejecutando {K_perms} permutaciones en paralelo (threading)...")
         t0 = time.time()
         
-        # Generar seeds para evitar colisiones de RNG en workers
         seeds = np.random.randint(0, 1000000, size=K_perms)
         
-        # Ejecución paralela
-        supremos = Parallel(n_jobs=-1)(
+        supremos = Parallel(n_jobs=-1, backend='threading')(
             delayed(worker_permutation)(s, D_all, N_FT, N_total, adj_4d, 0.1)
             for s in seeds
         )
-        print(f"Montecarlo Paralelo completado en {time.time()-t0:.2f}s")
+        print(f"Montecarlo completado en {time.time()-t0:.2f}s")
         
         # D) P-valores
         supremos = np.array(supremos)
@@ -191,7 +199,7 @@ if __name__ == "__main__":
         np.save(out_file, p_values)
         print(f"Resultados guardados en {out_file}")
         
-        # E) Limpiar Memoria explícitamente para el próximo R
+        # E) Limpiar Memoria
         del adj_4d, ch_adj, supremos, p_values, tfce_real
         gc.collect()
 

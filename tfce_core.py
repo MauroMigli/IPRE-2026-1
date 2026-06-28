@@ -7,35 +7,17 @@ def get_spatial_adjacency_matrix(ch_names, elp_file, R):
     """
     Construye la matriz de adyacencia espacial booleana NxN.
     Dos canales están conectados si su distancia euclidiana es <= R.
-    Si R es infinito (ej. np.inf), la matriz será True en todas partes (total).
     Si R es 0, la matriz será True solo en la diagonal (null).
     """
-    positions = get_3d_positions(elp_file, ch_names)
-    
+    coords = get_3d_positions(elp_file, ch_names)
     n_ch = len(ch_names)
     adj = np.zeros((n_ch, n_ch), dtype=bool)
     
-    # Calcular matriz de distancias
-    coords = []
-    valid_idxs = []
-    
-    for i, ch in enumerate(ch_names):
-        if ch in positions:
-            coords.append(positions[ch])
-            valid_idxs.append(i)
-        else:
-            coords.append((0, 0, 0)) # Fallback seguro
-            
-    coords = np.array(coords)
-    
     for i in range(n_ch):
         for j in range(n_ch):
-            if i in valid_idxs and j in valid_idxs:
-                dist = np.linalg.norm(coords[i] - coords[j])
-                if dist <= R:
-                    adj[i, j] = True
-            else:
-                if i == j: adj[i, j] = True # Conexión a sí mismo mínima
+            dist = np.linalg.norm(coords[i] - coords[j])
+            if dist <= R:
+                adj[i, j] = True
                     
     return adj
 

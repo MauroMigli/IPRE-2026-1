@@ -134,8 +134,7 @@ if __name__ == "__main__":
     
     # 4. Cálculo de Grilla de Radios (R)
     print("\n--- Calculando Grilla de Radios (R) ---")
-    positions = get_3d_positions(parameters.ELP_FILE, global_ch_names)
-    coords = np.array([positions.get(ch, (0,0,0)) for ch in global_ch_names])
+    coords = get_3d_positions(parameters.ELP_FILE, global_ch_names)
     
     # Encontrar distancia máxima entre electrodos (D_max)
     max_dist = 0

@@ -1,6 +1,7 @@
 import numpy as np
 import os
 import argparse
+from pathlib import Path
 import parameters
 import html_plotter
 
@@ -8,27 +9,33 @@ def main():
     parser = argparse.ArgumentParser(description="Generar visualización 3D interactiva con slider temporal para una banda específica.")
     parser.add_argument("--band", type=str, required=True, choices=list(parameters.F_BANDS.keys()), 
                         help="Nombre de la banda de frecuencia (Delta, Theta, Alpha, Beta, Gamma)")
-    parser.add_argument("--adjacency", type=str, choices=['total', 'null'], default='total',
-                        help="Tipo de matriz de adyacencia espacial a utilizar (total o null).")
+    parser.add_argument("--file", type=str, default=None,
+                        help="Ruta directa al archivo .npy de p-valores (ej. plots/p_values_R_3_val_6.44.npy)")
+    parser.add_argument("--adjacency", type=str, choices=['total', 'null'], default=None,
+                        help="Tipo de matriz de adyacencia espacial a utilizar (total o null). Usar solo si no se provee --file.")
     parser.add_argument("--output", type=str, default=None, 
                         help="Ruta del archivo HTML de salida (por defecto auto-generado en la carpeta plots)")
     
     args = parser.parse_args()
     
-    # 1. Definir input en base a la adyacencia
-    input_file = f"plots/p_values_empiricos_{args.adjacency}.npy"
-    
-    if not os.path.exists(input_file):
-        fallback_file = "plots/p_values_empiricos.npy"
-        if os.path.exists(fallback_file):
-            print(f"Advertencia: No se encontró '{input_file}'. Usando archivo de respaldo '{fallback_file}'.")
-            input_file = fallback_file
-        else:
-            print(f"Error: No se encontró '{input_file}' ni '{fallback_file}'.")
-            print("Asegúrate de que el pipeline principal haya terminado y guardado la matriz 4D.")
-            return
+    # 1. Definir archivo de entrada
+    if args.file is not None:
+        input_file = args.file
+        tag = Path(input_file).stem.replace("p_values_", "")
+    elif args.adjacency is not None:
+        input_file = f"plots/p_values_empiricos_{args.adjacency}.npy"
+        tag = args.adjacency
+    else:
+        # Fallback histórico
+        input_file = "plots/p_values_empiricos.npy"
+        tag = "default"
         
-    print(f"Cargando matriz de p-valores ({args.adjacency}) desde '{input_file}'...")
+    if not os.path.exists(input_file):
+        print(f"Error: No se encontró el archivo '{input_file}'.")
+        print("Asegúrate de haber copiado el archivo .npy correspondiente desde el servidor a tu carpeta local plots/")
+        return
+        
+    print(f"Cargando matriz de p-valores desde '{input_file}'...")
     p_values_4d = np.load(input_file) # shape: (dest, src, band, epoch)
     
     n_dest, n_src, n_band, n_epoch = p_values_4d.shape
@@ -48,14 +55,14 @@ def main():
     
     # 4. Definir nombre de salida
     if args.output is None:
-        filename = f"plots/cerebro_evolucion_{args.band}_{args.adjacency}.html"
+        filename = f"plots/cerebro_evolucion_{args.band}_{tag}.html"
     else:
         filename = args.output
         
     # 5. Obtener posiciones 3D de los electrodos
     coords_3d = html_plotter.get_3d_positions(parameters.ELP_FILE, channel_names)
     
-    # 6. Graficar con slider
+    # 6. Graficar con slider (Usando la nueva visualización continua de p-valores sin threshold duro)
     html_plotter.export_slider_3d_network(
         coords_3d,
         p_values_3d,

@@ -73,6 +73,6 @@ All generated outputs are automatically saved in the `plots/` directory:
   <img src="plots/evolution.gif" alt="Temporal Evolution of Connectivity - Alpha Band (Naive)" width="75%" />
   <p>
     <br>
-    <em><b>Figure 1:</b> Temporal evolution of directed functional connectivity (dDTF) within the <b>Alpha</b> frequency band under an uncorrected univariate significance contrast (<b>Naive approach</b>, Welch's t-test at a threshold of $p < 0.05$). The animation illustrates the volume of surviving directed edges across the scalp topography over consecutive experimental epochs.</em>
+    <em><b>Figure 1:</b> Temporal evolution of directed functional connectivity (dDTF) within the <b>Alpha</b> frequency band under an uncorrected univariate significance contrast (<b>Naive approach</b>, Welch's t-test at a threshold of p < 0.05). The animation illustrates the volume of surviving directed edges across the scalp topography over consecutive experimental epochs.</em>
   </p>
 </div>

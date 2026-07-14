@@ -67,12 +67,20 @@ All generated outputs are automatically saved in the `plots/` directory:
 - **`.html` files**: Interactive 3D scalp plots of significant connections.
 - **`.png` files**: Edge count evolution charts and TFCE energy heatmaps.
 
-## Plot Example
+## Figures
 <br>
 <div align="center">
   <img src="plots/evolution.gif" alt="Temporal Evolution of Connectivity - Alpha Band (Naive)" width="75%" />
   <p>
     <br>
     <em><b>Figure 1:</b> Temporal evolution of directed functional connectivity (dDTF) within the <b>Alpha</b> frequency band under an uncorrected univariate significance contrast (<b>Naive approach</b>, Welch's t-test at a threshold of p < 0.05). The animation illustrates the volume of surviving directed edges across the scalp topography over consecutive experimental epochs.</em>
+  </p>
+</div>
+<br>
+<div align="center">
+  <img src="data/mapaElectrodes.jpg" alt="Map of electrodes" width="75%" />
+  <p>
+    <br>
+    <em><b>Figure 2:</b> Map of channels. </em>
   </p>
 </div>

@@ -66,3 +66,6 @@ All generated outputs are automatically saved in the `plots/` directory:
 - **`p_values_*.npy`**: Raw matrices of the statistical p-values.
 - **`.html` files**: Interactive 3D scalp plots of significant connections.
 - **`.png` files**: Edge count evolution charts and TFCE energy heatmaps.
+
+## Plot Example
+![Evolución Temporal de la Conectividad](plots/evolution.gif)

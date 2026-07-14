@@ -1,4 +1,4 @@
-# 🧠 EEG Functional Connectivity Pipeline: dDTF & TFCE
+# EEG Functional Connectivity Pipeline: dDTF & TFCE
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![MNE-Python](https://img.shields.io/badge/MNE--Python-Processing-313639.svg)

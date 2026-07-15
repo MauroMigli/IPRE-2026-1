@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# EEG Data files (Must NEVER be tracked for privacy/size)
+*.set
+*.fdt
+data/F06_hb_sg/
+data/F06_sisg/
+data/epch_heartbeat/
+data/epch_ne/
+data/epch_silence/
+data/ddtf_cache/
+
+# IDEs and OS files
+.vscode/
+.idea/
+.DS_Store
+
+# Ignore all generated plots locally, but keeping plots/ directory open
+# Just in case you don't want local plots tracked, but currently plots are being pushed.
+# So I will leave plots alone, except the cache.

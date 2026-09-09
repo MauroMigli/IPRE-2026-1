@@ -30,18 +30,49 @@ def get_3d_positions(elp_filepath, channel_names):
     return coords_3d
 
 
-def get_spatial_adjacency_matrix(ch_names, elp_file, R):
+def get_roi_3d_centroids(elp_filepath, rois_dict):
+    """
+    Calcula las posiciones 3D de los centroides de cada ROI/super-nodo
+    promediando las coordenadas de sus electrodos constituyentes.
+    
+    Retorna:
+    --------
+    centroids_3d: np.ndarray de forma (n_rois, 3)
+    roi_names: lista con los nombres de las ROIs en orden
+    """
+    roi_names = list(rois_dict.keys())
+    all_channels = [ch for chs in rois_dict.values() for ch in chs]
+    coords = get_3d_positions(elp_filepath, all_channels)
+    ch_to_coord = {ch: coords[i] for i, ch in enumerate(all_channels)}
+    
+    centroids_3d = np.zeros((len(roi_names), 3))
+    for r_idx, roi in enumerate(roi_names):
+        member_coords = [ch_to_coord[ch] for ch in rois_dict[roi] if ch in ch_to_coord]
+        if member_coords:
+            centroids_3d[r_idx] = np.mean(member_coords, axis=0)
+            
+    return centroids_3d, roi_names
+
+
+def get_spatial_adjacency_matrix(node_names, elp_file, R, rois_dict=None):
     """
     Construye la matriz de adyacencia espacial booleana NxN.
-    Dos canales están conectados si su distancia euclidiana es <= R.
+    Dos nodos están conectados si su distancia euclidiana es <= R.
+    Soporta tanto canales individuales como ROIs/super-nodos.
     Si R es 0, la matriz será True solo en la diagonal (null).
     """
-    coords = get_3d_positions(elp_file, ch_names)
-    n_ch = len(ch_names)
-    adj = np.zeros((n_ch, n_ch), dtype=bool)
+    node_names = list(node_names)
+    if rois_dict is not None and all(name in rois_dict for name in node_names):
+        centroids_3d, _ = get_roi_3d_centroids(elp_file, rois_dict)
+        coords = centroids_3d
+    else:
+        coords = get_3d_positions(elp_file, node_names)
+        
+    n_nodes = len(node_names)
+    adj = np.zeros((n_nodes, n_nodes), dtype=bool)
     
-    for i in range(n_ch):
-        for j in range(n_ch):
+    for i in range(n_nodes):
+        for j in range(n_nodes):
             dist = np.linalg.norm(coords[i] - coords[j])
             if dist <= R:
                 adj[i, j] = True

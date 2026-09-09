@@ -3,8 +3,12 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg')
 from matplotlib import pyplot as plt
-import plotly.graph_objects as go
-import plotly.offline as pyo
+try:
+    import plotly.graph_objects as go
+    import plotly.offline as pyo
+except ImportError:
+    go = None
+    pyo = None
 import parameters
 
 # ==========================================
@@ -69,6 +73,49 @@ def plot_aic_bic_histograms(aic_votes, bic_votes, output_dir="plots"):
     plt.close()
 
 
+def plot_order_selection_curves(lags, aic_means, bic_means, aic_votes, bic_votes, output_dir="plots"):
+    """
+    Genera un gráfico formal de 2 paneles para selección de orden MVAR:
+    - Panel Izquierdo: Curvas promedio de AIC y BIC vs lag (p) con los mínimos destacados.
+    - Panel Derecho: Histogramas de votos por época para AIC y BIC.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+
+    # Panel 1: Curvas de Información Promedio
+    axes[0].plot(lags, aic_means, marker='o', label='AIC', color='#1f77b4', lw=2)
+    axes[0].plot(lags, bic_means, marker='s', label='BIC', color='#2ca02c', lw=2)
+
+    best_p_aic = lags[np.nanargmin(aic_means)]
+    best_p_bic = lags[np.nanargmin(bic_means)]
+
+    axes[0].axvline(x=best_p_aic, color='#1f77b4', linestyle='--', alpha=0.7, label=f'Mínimo AIC (p={best_p_aic})')
+    axes[0].axvline(x=best_p_bic, color='#2ca02c', linestyle='--', alpha=0.7, label=f'Mínimo BIC (p={best_p_bic})')
+
+    axes[0].set_title('Criterios de Información Promedio vs. Rezago MVAR (p)', fontsize=12)
+    axes[0].set_xlabel('Orden del Modelo (p)', fontsize=11)
+    axes[0].set_ylabel('Criterio de Información', fontsize=11)
+    axes[0].set_xticks(lags)
+    axes[0].grid(True, linestyle='--', alpha=0.6)
+    axes[0].legend(fontsize=10)
+
+    # Panel 2: Distribución de Votos por Época
+    bins = np.arange(lags[0] - 0.5, lags[-1] + 1.5, 1)
+    axes[1].hist([aic_votes, bic_votes], bins=bins, label=['Votos AIC', 'Votos BIC'],
+                 color=['#1f77b4', '#2ca02c'], edgecolor='black', alpha=0.85)
+    axes[1].set_title('Distribución de Orden Óptimo Elegido por Época', fontsize=12)
+    axes[1].set_xlabel('Orden Óptimo (p)', fontsize=11)
+    axes[1].set_ylabel('Frecuencia (Épocas)', fontsize=11)
+    axes[1].set_xticks(lags)
+    axes[1].grid(axis='y', linestyle='--', alpha=0.6)
+    axes[1].legend(fontsize=10)
+
+    plt.tight_layout()
+    filename = os.path.join(output_dir, 'mvar_order_selection_curves.png')
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    plt.close()
+
+
 # ==========================================
 # PLOT 3: Renderizado HTML 3D
 # ==========================================
@@ -85,7 +132,8 @@ def export_interactive_3d_network(coords_3d, p_values, channel_names, filename="
     keep_mask = np.ones(len(channel_names), dtype=bool)
     if dropped_channels is not None:
         dropped_set = set(dropped_channels)
-        keep_mask &= np.array([ch not in dropped_set for ch in channel_names], dtype=bool)
+        if any(ch in dropped_set for ch in channel_names):
+            keep_mask &= np.array([ch not in dropped_set for ch in channel_names], dtype=bool)
         
     p_threshold = 0.05
     highly_sig_threshold = 0.01
@@ -106,15 +154,16 @@ def export_interactive_3d_network(coords_3d, p_values, channel_names, filename="
     n_ch = len(channel_names)
     
     xs, ys, zs = coords_3d[:, 0], coords_3d[:, 1], coords_3d[:, 2]
+    marker_size = 10 if any('_' in ch for ch in channel_names) else 6
     
     nodos_trace = go.Scatter3d(
         x=xs, y=ys, z=zs,
         mode='markers+text',
-        marker=dict(size=6, color='black', opacity=0.7),
+        marker=dict(size=marker_size, color='black', opacity=0.7),
         text=channel_names,
         textposition="top center",
         hoverinfo='text',
-        name='Electrodos'
+        name='Nodos'
     )
     
     edge_traces = []
@@ -159,13 +208,13 @@ def export_interactive_3d_network(coords_3d, p_values, channel_names, filename="
 # ==========================================
 # PLOT 4: Mapas de Promedio Temporal TFCE
 # ==========================================
-def plot_tfce_heatmaps(tfce_temporal_avg, band_name, R_label, output_dir="plots"):
+def plot_tfce_heatmaps(tfce_temporal_avg, band_name, R_label, output_dir="plots", node_names=None):
     """
     Proyecta las energías TFCE promediadas temporalmente en un heatmap 2D (escala log).
+    Soporta etiquetas de super-nodos o canales.
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # Escala logarítmica para suavizar los picos de energía
     log_values = np.log1p(tfce_temporal_avg)
     
     plt.figure(figsize=(10, 8))
@@ -176,9 +225,18 @@ def plot_tfce_heatmaps(tfce_temporal_avg, band_name, R_label, output_dir="plots"
     )
     plt.colorbar(label='log(1 + TFCE)')
     plt.title(f"Promedio Temporal TFCE - Banda {band_name} (R={R_label})")
-    plt.xlabel('Canal Origen')
-    plt.ylabel('Canal Destino')
     
+    if node_names is not None:
+        ticks = np.arange(len(node_names))
+        plt.xticks(ticks, node_names, rotation=45, ha='right', fontsize=9)
+        plt.yticks(ticks, node_names, fontsize=9)
+        plt.xlabel('Super-Nodo Origen')
+        plt.ylabel('Super-Nodo Destino')
+    else:
+        plt.xlabel('Canal Origen')
+        plt.ylabel('Canal Destino')
+        
+    plt.tight_layout()
     filename = os.path.join(output_dir, f'tfce_heatmap_R{R_label}_{band_name}.png')
     plt.savefig(filename, bbox_inches='tight', dpi=300)
     plt.close()

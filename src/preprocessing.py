@@ -1,4 +1,7 @@
-import mne
+try:
+    import mne
+except ImportError:
+    mne = None
 import parameters
 from pathlib import Path
 

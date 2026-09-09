@@ -8,44 +8,60 @@
 
 This repository documents my undergraduate research project **(IPre)** conducted during the first semester of 2026 under the supervision of Professor Mircea Petrache (Faculty of Mathematics - PUC) and Professor Marcela Peña (School of Psychology - PUC). The main goal is to analyze functional connectivity in EEG data using direct Directed Transfer Function (dDTF) and evaluate statistical significance via Threshold-Free Cluster Enhancement (TFCE).
 
-## Pipeline Architecture
+## Pipeline Architecture (Super-Nodos / ROIs)
 
 ```mermaid
 graph TD
-    A[Raw EEG Data .set/.fdt] -->|MNE-Python| B(Preprocessing & Channel Pruning)
-    B -->|46 Channels / 1500 Samples| C[Bivariate MVAR Model p=7]
-    C -->|Fourier Transform| D[direct Directed Transfer Function dDTF]
-    D -->|O1 Caching| E[(Cache Storage .npy)]
-    E --> F{Statistical Contrasting}
-    F -->|Naive| G[Uncorrected Welch t-test]
-    F -->|FDR| H[Benjamini-Hochberg Correction]
-    F -->|TFCE + Monte Carlo| I[Topological Cluster Enhancement]
-    G & H & I --> J[3D Scalp Connectivity Plots]
+    A[Raw EEG Data .set/.fdt] -->|MNE-Python| B(Preprocessing & Channel Pruning - 46 Channels)
+    B -->|Spatial Pooling / PCA| C[8 Anatomical Super-Nodes / ROIs]
+    C -->|Statsmodels| D[Multivariate Global MVAR Model p]
+    D -->|Fourier Transform| E[direct Directed Transfer Function dDTF]
+    E -->|O1 Caching| F[(Cache Storage _ddtf_rois.npy)]
+    F --> G{Statistical Contrasting FT vs PT}
+    G -->|Naive| H[Welch t-test]
+    G -->|FDR| I[Benjamini-Hochberg Correction]
+    G -->|TFCE + Monte Carlo| J[Topological Cluster Enhancement on ROI Centroids]
+    H & I & J --> K[3D Interactive Networks & Heatmaps]
 ```
+
+## Model Order Selection (AIC & BIC)
+
+Para evitar fijar el orden del rezago $p$ arbitrariamente, dispones de una herramienta reproducible y modularizada para calcular los criterios de información de Akaike (AIC) y Bayesiano (BIC) sobre las épocas multivariadas de super-nodos:
+
+```bash
+# Evaluar orden óptimo p en todo el dataset y generar curvas en plots/
+python find_optimal_p.py --max-p 15 --method mean
+```
+
+Esto generará `plots/mvar_order_selection_curves.png` (curvas de AIC/BIC y distribución de votos por época) y el archivo de métricas estructurado `plots/mvar_order_selection.json`.
 
 ## How to Run
 
-The pipeline is fully automated and designed for HPC environments. Execution is handled via the `run_pipeline.py` orchestrator.
+El pipeline está completamente automatizado y preparado para entornos HPC / Slurm. La ejecución se gestiona mediante el orquestador `run_pipeline.py`.
 
 ### Basic Execution
-Run all statistical methods (Naive, FDR, and TFCE) with default parameters:
+Ejecutar todos los métodos estadísticos (Naive, FDR y TFCE) sobre super-nodos (ROIs):
 ```bash
 python run_pipeline.py
 ```
 
 ### Command-Line Arguments (`argparse`)
-You can fully customize the execution using the following flags:
+Puedes personalizar la ejecución con las siguientes banderas:
 
-* `--method`: Choose the statistical approach to run. Options: `naive`, `fdr`, `tfce`, or `all`. *(Default: `all`)*
-* `--p`: Optimal MVAR model lag order. *(Default: `7`)*
-* `--R`: Spatial radius (in cm) for topological clustering in TFCE. Controls node adjacency. *(Default: `6.44`)*
-* `--dh`: Discrete step size for the TFCE Riemann integral. *(Default: `0.1`)*
-* `--perms`: Number of Monte Carlo permutations for the TFCE empirical null distribution. *(Default: `1000`)*
-* `--jobs`: Number of CPU cores for parallel permutation processing. Set to `-1` to use all available cores. *(Default: `-1`)*
+* `--use-rois`: Opera sobre los 8 super-nodos ROIs anatómicamente definidos. *(Habilitado por defecto)*
+* `--no-rois`: Desactiva el modo ROIs y ejecuta el análisis canal a canal bivariado legado.
+* `--roi-method`: Método de agregación de canales dentro de cada ROI: `mean` (promedio espacial) o `pca` (primer componente principal). *(Default: `mean`)*
+* `--select-order`: Ejecuta la búsqueda empírica de orden MVAR vía AIC/BIC antes de iniciar el cálculo de conectividad.
+* `--method`: Método estadístico a correr: `naive`, `fdr`, `tfce`, o `all`. *(Default: `all`)*
+* `--p`: Orden del modelo MVAR. *(Default: el fijado en `parameters.P_OPTIMO`)*
+* `--R`: Radio espacial (en cm) para adyacencia espacial en TFCE. *(Default: automático, 9.5 cm para ROIs)*
+* `--dh`: Paso discreto para la integral de Riemann en TFCE. *(Default: `0.1`)*
+* `--perms`: Número de permutaciones Monte Carlo para TFCE. *(Default: `1000`)*
+* `--jobs`: Número de cores CPU para paralelización (-1 = todos). *(Default: `-1`)*
 
-**Example HPC run:**
+**Ejemplo HPC run:**
 ```bash
-python run_pipeline.py --method tfce --R 6.44 --perms 5000 --jobs 16
+python run_pipeline.py --method all --use-rois --perms 5000 --jobs 16
 ```
 
 ## Adding New Data & Configuration

@@ -4,18 +4,23 @@ import gc
 import numpy as np
 from pathlib import Path
 from scipy.stats import ttest_ind
-from joblib import Parallel, delayed
+try:
+    from joblib import Parallel, delayed
+except ImportError:
+    Parallel, delayed = None, None
 import time
 
 import parameters
 from src.preprocessing import get_valid_subjects
 from src.connectivity import load_and_compute_ddtf
-from src.statistics import compute_welch_t_map, get_spatial_adjacency_matrix, build_4d_graph, tfce_transform, fdrcorrect_bh, worker_permutation, get_3d_positions
-from src.visualization import plot_edge_counts, plot_aic_bic_histograms, export_interactive_3d_network, plot_tfce_heatmaps
+from src.statistics import compute_welch_t_map, get_spatial_adjacency_matrix, build_4d_graph, tfce_transform, fdrcorrect_bh, worker_permutation, get_3d_positions, get_roi_3d_centroids
+from src.visualization import plot_edge_counts, plot_aic_bic_histograms, export_interactive_3d_network, plot_tfce_heatmaps, plot_order_selection_curves
+from src.model_order import find_dataset_optimal_order
 
 def run(args):
     print("==========================================================================")
     print(" IPRE-2026: Pipeline de Análisis de Conectividad EEG")
+    print(f" Modo: {'SUPER-NODOS (ROIs)' if args.use_rois else 'CANALES INDIVIDUALES'}")
     print("==========================================================================")
     
     os.makedirs("plots", exist_ok=True)
@@ -23,19 +28,39 @@ def run(args):
     valid_subjects = get_valid_subjects()
     print(f"Sujetos válidos encontrados (ambas condiciones): {len(valid_subjects)}")
     
+    # --- Opcional: Selección de Orden MVAR (AIC / BIC) ---
+    if args.select_order:
+        order_res = find_dataset_optimal_order(
+            valid_subjects,
+            rois_dict=parameters.ROIS if args.use_rois else None,
+            max_p=15,
+            method=args.roi_method
+        )
+        if order_res is not None:
+            plot_order_selection_curves(
+                np.array(order_res['lags']),
+                np.array(order_res['mean_aic']),
+                np.array(order_res['mean_bic']),
+                np.array(order_res['aic_votes']),
+                np.array(order_res['bic_votes']),
+                output_dir="plots"
+            )
+            print(f"  -> Actualizando p={order_res['recommended_p']} para el cálculo de conectividad.")
+            args.p = order_res['recommended_p']
+
     D_FT = []
     D_PT = []
-    global_ch_names = None
+    global_node_names = None
     
     bands = parameters.F_BANDS
     band_names = list(bands.keys())
     fs_global = parameters.FS_GLOBAL
     
-    print("\n--- 1. Extracción y Cálculo de Conectividad dDTF ---")
+    print(f"\n--- 1. Extracción y Cálculo de Conectividad dDTF (p={args.p}) ---")
     for kid_id, info in valid_subjects.items():
-        ddtf_hb, ch = load_and_compute_ddtf(info['hb'], p=args.p, sampling_freq=500.0)
-        if global_ch_names is None: global_ch_names = ch
-        ddtf_si, _ = load_and_compute_ddtf(info['si'], p=args.p, sampling_freq=500.0)
+        ddtf_hb, nodes = load_and_compute_ddtf(info['hb'], p=args.p, sampling_freq=500.0, use_rois=args.use_rois, roi_method=args.roi_method)
+        if global_node_names is None: global_node_names = nodes
+        ddtf_si, _ = load_and_compute_ddtf(info['si'], p=args.p, sampling_freq=500.0, use_rois=args.use_rois, roi_method=args.roi_method)
         
         min_ep = min(len(ddtf_hb), len(ddtf_si))
         D_s = ddtf_hb[:min_ep] - ddtf_si[:min_ep]
@@ -54,13 +79,21 @@ def run(args):
         del ddtf_hb, ddtf_si, D_s, D_s_bands
     gc.collect()
     
+    if not D_FT or not D_PT:
+        print("[ERROR] No hay datos disponibles para ambos grupos (FT y PT). Verifica las rutas.")
+        return
+        
     global_min_epochs = min([len(D) for D in D_FT] + [len(D) for D in D_PT])
     D_FT_arr = np.array([D[:global_min_epochs] for D in D_FT])
     D_PT_arr = np.array([D[:global_min_epochs] for D in D_PT])
     
-    np.save("plots/channel_names.npy", np.array(global_ch_names, dtype=object))
+    prefix = "plots/p_values_rois" if args.use_rois else "plots/p_values"
+    np.save(f"{prefix}_node_names.npy", np.array(global_node_names, dtype=object))
     
-    coords_3d = get_3d_positions(parameters.ELP_FILE, global_ch_names)
+    if args.use_rois:
+        coords_3d, _ = get_roi_3d_centroids(parameters.ELP_FILE, parameters.ROIS)
+    else:
+        coords_3d = get_3d_positions(parameters.ELP_FILE, global_node_names)
     
     p_values_naive = None
     p_values_fdr = None
@@ -71,9 +104,9 @@ def run(args):
         print("\n--- 2. Calculando T-Test de Welch (Naive) ---")
         _, p_values_raw = ttest_ind(D_FT_arr, D_PT_arr, axis=0, equal_var=False, nan_policy='omit')
         p_values_naive = np.transpose(p_values_raw, (2, 3, 1, 0)) # (dest, src, band, epoch)
-        np.save("plots/p_values_naive.npy", p_values_naive)
+        np.save(f"{prefix}_naive.npy", p_values_naive)
         
-        export_interactive_3d_network(coords_3d, p_values_naive[:, :, 0, 0], global_ch_names, filename="plots/red_naive_b0_e0.html", dropped_channels=parameters.DROPPED_CHANNELS)
+        export_interactive_3d_network(coords_3d, p_values_naive[:, :, 0, 0], global_node_names, filename=f"plots/red_naive_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
         
     # --- 3. FDR (Benjamini-Hochberg) ---
     if args.method in ['fdr', 'all']:
@@ -93,8 +126,8 @@ def run(args):
                 q_slice[valid_mask] = q_valid
                 p_values_fdr[:, :, b, e] = q_slice
                 
-        np.save("plots/p_values_fdr.npy", p_values_fdr)
-        export_interactive_3d_network(coords_3d, p_values_fdr[:, :, 0, 0], global_ch_names, filename="plots/red_fdr_b0_e0.html", dropped_channels=parameters.DROPPED_CHANNELS)
+        np.save(f"{prefix}_fdr.npy", p_values_fdr)
+        export_interactive_3d_network(coords_3d, p_values_fdr[:, :, 0, 0], global_node_names, filename=f"plots/red_fdr_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
 
     # --- 4. TFCE (Permutaciones de Monte Carlo) ---
     if args.method in ['tfce', 'all']:
@@ -102,8 +135,9 @@ def run(args):
         t_map_raw = compute_welch_t_map(D_FT_arr, D_PT_arr)
         T_map_real_4d = np.transpose(t_map_raw, (2, 3, 1, 0))
         
-        print(f"  * Construyendo grafo espacial con R={args.R} cm")
-        adj_spatial = get_spatial_adjacency_matrix(global_ch_names, parameters.ELP_FILE, args.R)
+        r_val = args.R if args.R is not None else (parameters.R_ROI_DEFAULT if args.use_rois else 6.44)
+        print(f"  * Construyendo grafo espacial con R={r_val} cm")
+        adj_spatial = get_spatial_adjacency_matrix(global_node_names, parameters.ELP_FILE, r_val, rois_dict=parameters.ROIS if args.use_rois else None)
         adj_4d = build_4d_graph(adj_spatial, n_bands=len(band_names), n_epochs=global_min_epochs)
         
         print("  * Transformando mapa T real a TFCE")
@@ -124,7 +158,6 @@ def run(args):
         max_tfce_null = np.array(max_tfce_null)
         p_values_tfce = np.ones_like(tfce_real)
         
-        # Calcular p-valores pseudo-empíricos
         for e in range(tfce_real.shape[3]):
             for b in range(tfce_real.shape[2]):
                 for i in range(tfce_real.shape[0]):
@@ -135,18 +168,16 @@ def run(args):
                             val = tfce_real[i, j, b, e]
                             p_values_tfce[i, j, b, e] = np.sum(max_tfce_null >= val) / args.perms
                             
-        np.save("plots/p_values_tfce.npy", p_values_tfce)
-        export_interactive_3d_network(coords_3d, p_values_tfce[:, :, 0, 0], global_ch_names, filename="plots/red_tfce_b0_e0.html", dropped_channels=parameters.DROPPED_CHANNELS)
+        np.save(f"{prefix}_tfce.npy", p_values_tfce)
+        export_interactive_3d_network(coords_3d, p_values_tfce[:, :, 0, 0], global_node_names, filename=f"plots/red_tfce_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
         
-        # Plot Heatmaps (Ej: R=0, 6.44, 19.32)
-        # Promediamos temporalmente el TFCE crudo para los plots de energía
         tfce_temp_avg = np.mean(tfce_real[:, :, 0, :], axis=2) # Banda 0
-        plot_tfce_heatmaps(tfce_temp_avg, band_names[0], args.R, output_dir="plots")
+        plot_tfce_heatmaps(tfce_temp_avg, band_names[0], r_val, output_dir="plots", node_names=global_node_names)
         
-    # --- 5. Gráfico Final de Tendencias (Si se corrieron todos) ---
+    # --- 5. Gráfico Final de Tendencias ---
     if args.method == 'all':
         print("\n--- 5. Generando visualizaciones consolidadas ---")
-        expected_fp = (len(global_ch_names) * (len(global_ch_names) - 1)) * 0.05
+        expected_fp = (len(global_node_names) * (len(global_node_names) - 1)) * 0.05
         epochs_x = np.arange(global_min_epochs)
         
         for b_idx, b_name in enumerate(band_names):
@@ -161,11 +192,15 @@ def run(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline de Conectividad EEG")
     parser.add_argument("--method", type=str, choices=['naive', 'fdr', 'tfce', 'all'], default='all', help="Método estadístico a correr")
-    parser.add_argument("--p", type=int, default=7, help="Orden MVAR óptimo")
+    parser.add_argument("--p", type=int, default=parameters.P_OPTIMO, help="Orden MVAR (default: parameters.P_OPTIMO)")
     parser.add_argument("--dh", type=float, default=0.1, help="Paso discreto dh para la integral TFCE")
-    parser.add_argument("--R", type=float, default=6.44, help="Radio espacial (cm) para adyacencia TFCE")
+    parser.add_argument("--R", type=float, default=None, help="Radio espacial (cm) para adyacencia TFCE (None = auto según modo)")
     parser.add_argument("--perms", type=int, default=1000, help="Número de permutaciones Monte Carlo")
     parser.add_argument("--jobs", type=int, default=-1, help="Número de cores para paralelizacion (-1 = todos)")
+    parser.add_argument("--use-rois", action="store_true", default=True, help="Operar sobre super-nodos ROIs (default: True)")
+    parser.add_argument("--no-rois", dest="use_rois", action="store_false", help="Desactivar ROIs y operar sobre canales individuales")
+    parser.add_argument("--roi-method", type=str, choices=['mean', 'pca'], default='mean', help="Método intra-ROI: 'mean' o 'pca'")
+    parser.add_argument("--select-order", action="store_true", help="Buscar empíricamente el orden óptimo MVAR vía AIC/BIC antes de correr")
     
     args = parser.parse_args()
     run(args)

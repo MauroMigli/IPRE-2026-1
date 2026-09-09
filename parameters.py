@@ -29,3 +29,23 @@ F_MAX = max([b[1] for b in F_BANDS.values()])
 FS_GLOBAL = arange(F_MIN, F_MAX + FREQ_STEP, FREQ_STEP)
 
 P_OPTIMO = 7
+
+# ==============================================================================
+# CONFIGURACIÓN DE REGIONS OF INTEREST (ROIs) COMO SUPER-NODOS
+# ==============================================================================
+USE_ROIS = True
+ROI_EXTRACTION_METHOD = "mean"  # Opciones: 'mean' (promedio espacial) o 'pca' (primer componente principal)
+R_ROI_DEFAULT = 9.5  # Radio espacial (cm) sugerido para TFCE entre centroides de ROIs
+
+# Definición formal de las 8 ROIs simétricas (cubren los canales supervivientes)
+ROIS = {
+    "Frontal_Medial": ["E3", "E4", "E6", "E8", "E9", "E12", "E60"],
+    "Frontal_Lateral_L": ["E11", "E13", "E14", "E15", "E18", "E19"],
+    "Frontal_Lateral_R": ["E2", "E54", "E56", "E57", "E58", "E59"],
+    "Central_Motor_L": ["E7", "E16", "E20", "E21"],
+    "Central_Motor_R": ["E41", "E50", "E51", "E53"],
+    "TemporoParietal_L": ["E22", "E24", "E25", "E26", "E27", "E28", "E30"],
+    "TemporoParietal_R": ["E42", "E44", "E45", "E46", "E48", "E49", "E52"],
+    "Parieto_Occipital": ["E31", "E33", "E34", "E36", "E38", "E40"],
+}
+ROI_NAMES = list(ROIS.keys())

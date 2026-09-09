@@ -11,7 +11,10 @@
 # Activar entorno virtual
 source ../.venv/bin/activate
 
-# Ejecutar el orquestador principal
-echo "Iniciando ejecución del pipeline EEG..."
-python ../run_pipeline.py --method all --R 6.44 --perms 1000 --jobs 16
+# 1. (Opcional) Búsqueda previa del orden óptimo MVAR (AIC / BIC)
+# python ../find_optimal_p.py --max-p 15 --method mean
+
+# 2. Ejecutar el orquestador principal sobre super-nodos (ROIs)
+echo "Iniciando ejecución del pipeline EEG (Super-Nodos ROIs)..."
+python ../run_pipeline.py --method all --use-rois --perms 1000 --jobs 16
 echo "Pipeline finalizado exitosamente."

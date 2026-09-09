@@ -28,7 +28,9 @@ F_MIN = min([b[0] for b in F_BANDS.values()])
 F_MAX = max([b[1] for b in F_BANDS.values()])
 FS_GLOBAL = arange(F_MIN, F_MAX + FREQ_STEP, FREQ_STEP)
 
-P_OPTIMO = 7
+# Orden óptimo del modelo MVAR determinado empíricamente mediante model_order.py
+# (Criterio del codo / Elbow criterion sobre las curvas de información AIC y BIC)
+P_OPTIMO = 5
 
 # ==============================================================================
 # CONFIGURACIÓN DE REGIONS OF INTEREST (ROIs) COMO SUPER-NODOS

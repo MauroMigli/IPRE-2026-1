@@ -159,8 +159,13 @@ def find_dataset_optimal_order(valid_subjects, rois_dict=None, max_p=15, method=
         'total_epochs_evaluated': int(total_aic.shape[0])
     }
     
-    out_file = os.path.join(output_dir, "mvar_order_selection.json")
+    results['method'] = method
+    
+    out_file = os.path.join(output_dir, f"mvar_order_selection_{method}.json")
     with open(out_file, "w") as f:
+        json.dump(results, f, indent=4)
+    # Copia genérica
+    with open(os.path.join(output_dir, "mvar_order_selection.json"), "w") as f:
         json.dump(results, f, indent=4)
         
     print("\n==========================================================================")

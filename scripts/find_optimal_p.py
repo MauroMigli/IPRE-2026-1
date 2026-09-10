@@ -7,20 +7,26 @@ usando Criterios de Información de Akaike (AIC) y Bayesiano (BIC) sobre Super-N
 import argparse
 import os
 import sys
+from pathlib import Path
 import numpy as np
+
+# Asegurar que la raíz del proyecto esté en sys.path
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import parameters
 from src.preprocessing import get_valid_subjects
 from src.model_order import find_dataset_optimal_order, evaluate_epoch_orders
 from src.visualization import plot_order_selection_curves
 
-def run_synthetic_benchmark(max_p=15, n_epochs=20, n_times=250, n_rois=8):
+def run_synthetic_benchmark(max_p=15, n_epochs=20, n_times=250, n_rois=8, method="mean"):
     """
     Ejecuta una evaluación simulada con señales multivariadas de prueba
     para verificar la estabilidad del módulo cuando no hay datos crudos locales.
     """
-    print(f"\n[BENCHMARK SINTÉTICO] Generando {n_epochs} épocas de prueba ({n_rois} ROIs, {n_times} muestras)...")
-    np.random.seed(42)
+    print(f"\n[BENCHMARK SINTÉTICO] Generando {n_epochs} épocas de prueba ({n_rois} ROIs, {n_times} muestras, método: {method})...")
+    np.random.seed(42 if method == "mean" else 100)
     # Generar proceso autorregresivo multivariado sintético con p_true = 5
     p_true = 5
     lags = np.arange(1, max_p + 1)
@@ -47,10 +53,15 @@ def run_synthetic_benchmark(max_p=15, n_epochs=20, n_times=250, n_rois=8):
     aic_votes = lags[np.nanargmin(all_aic, axis=1)]
     bic_votes = lags[np.nanargmin(all_bic, axis=1)]
     
-    plot_order_selection_curves(lags, mean_aic, mean_bic, aic_votes, bic_votes, output_dir="plots")
+    plot_order_selection_curves(
+        lags, mean_aic, mean_bic, aic_votes, bic_votes, 
+        output_dir="plots", 
+        suffix=f"_{method}",
+        method_label=f"ROI: {method.upper()}"
+    )
     opt_p = lags[np.nanargmin(mean_bic)]
     print(f"[BENCHMARK SINTÉTICO] Orden óptimo detectado por BIC: p = {opt_p} (Esperado cercano a {p_true})")
-    print("Gráfico generado en: plots/mvar_order_selection_curves.png")
+    print(f"Gráfico generado en: plots/mvar_order_selection_curves_{method}.png")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -68,10 +79,10 @@ def main():
     if len(valid_subjects) == 0:
         print("\n[AVISO] No se encontraron sujetos con datos en data/epch_heartbeat y data/epch_silence.")
         if args.synthetic:
-            run_synthetic_benchmark(max_p=args.max_p)
+            run_synthetic_benchmark(max_p=args.max_p, method=args.method)
             return
         else:
-            print("Para probar la funcionalidad con datos simulados, usa: python find_optimal_p.py --synthetic")
+            print("Para probar la funcionalidad con datos simulados, usa: python scripts/find_optimal_p.py --synthetic")
             sys.exit(0)
             
     results = find_dataset_optimal_order(
@@ -89,11 +100,13 @@ def main():
             np.array(results['mean_bic']),
             np.array(results['aic_votes']),
             np.array(results['bic_votes']),
-            output_dir=args.output_dir
+            output_dir=args.output_dir,
+            suffix=f"_{args.method}",
+            method_label=f"ROI: {args.method.upper()}"
         )
-        print(f"\n[INFO] Gráfico comparativo guardado en: {args.output_dir}/mvar_order_selection_curves.png")
+        print(f"\n[INFO] Gráfico guardado en: {args.output_dir}/mvar_order_selection_curves_{args.method}.png")
         print(f"[RECOMENDACIÓN] Puedes configurar 'P_OPTIMO = {results['recommended_p']}' en parameters.py")
-        print(f"                o ejecutar el pipeline con: python run_pipeline.py --p {results['recommended_p']}")
+        print(f"                o ejecutar el pipeline con: python run_pipeline.py --roi-method {args.method} --p {results['recommended_p']}")
 
 if __name__ == "__main__":
     main()

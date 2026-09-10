@@ -11,10 +11,23 @@
 # Activar entorno virtual
 source ../.venv/bin/activate
 
-# 1. (Opcional) Búsqueda previa del orden óptimo MVAR (AIC / BIC)
-# python ../find_optimal_p.py --max-p 15 --method mean
+# 1. (Opcional) Búsqueda previa del orden óptimo MVAR (AIC / BIC) para ambos métodos
+# python ../scripts/find_optimal_p.py --max-p 15 --method mean
+# python ../scripts/find_optimal_p.py --max-p 15 --method pca
 
-# 2. Ejecutar el orquestador principal sobre super-nodos (ROIs)
-echo "Iniciando ejecución del pipeline EEG (Super-Nodos ROIs)..."
-python ../run_pipeline.py --method all --use-rois --perms 1000 --jobs 16
-echo "Pipeline finalizado exitosamente."
+# 2. Ejecutar análisis principal con Promedio Espacial (Mean)
+echo "Ejecutando pipeline con Promedio Espacial (Mean)..."
+python ../run_pipeline.py --method fdr --use-rois --roi-method mean
+
+# 3. Ejecutar análisis de robustez con PCA (1er Componente Principal)
+echo "Ejecutando pipeline de robustez con PCA (PC1)..."
+python ../run_pipeline.py --method fdr --use-rois --roi-method pca
+
+# 4. Generar visualizaciones interactivas 3D temporales (Delta y Gamma)
+python ../scripts/plot_temporal_network.py --band both --roi-method mean
+python ../scripts/plot_temporal_network.py --band both --roi-method pca
+
+# 5. Generar informe comparativo de robustez cuantitativo
+python ../scripts/compare_robustness.py
+
+echo "Pipeline de robustez finalizado exitosamente."

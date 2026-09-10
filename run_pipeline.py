@@ -14,7 +14,7 @@ import parameters
 from src.preprocessing import get_valid_subjects
 from src.connectivity import load_and_compute_ddtf
 from src.statistics import compute_welch_t_map, get_spatial_adjacency_matrix, build_4d_graph, tfce_transform, fdrcorrect_bh, worker_permutation, get_3d_positions, get_roi_3d_centroids
-from src.visualization import plot_edge_counts, plot_aic_bic_histograms, export_interactive_3d_network, plot_tfce_heatmaps, plot_order_selection_curves
+from src.visualization import plot_edge_counts, plot_aic_bic_histograms, export_interactive_3d_network, plot_tfce_heatmaps, plot_order_selection_curves, plot_robustness_comparison
 from src.model_order import find_dataset_optimal_order
 
 def run(args):
@@ -87,8 +87,11 @@ def run(args):
     D_FT_arr = np.array([D[:global_min_epochs] for D in D_FT])
     D_PT_arr = np.array([D[:global_min_epochs] for D in D_PT])
     
-    prefix = "plots/p_values_rois" if args.use_rois else "plots/p_values"
+    roi_suffix = f"_{args.roi_method}" if args.use_rois else ""
+    prefix = f"plots/p_values_rois{roi_suffix}" if args.use_rois else "plots/p_values"
     np.save(f"{prefix}_node_names.npy", np.array(global_node_names, dtype=object))
+    if args.use_rois and args.roi_method == 'mean':
+        np.save("plots/p_values_rois_node_names.npy", np.array(global_node_names, dtype=object))
     
     if args.use_rois:
         coords_3d, _ = get_roi_3d_centroids(parameters.ELP_FILE, parameters.ROIS)
@@ -101,16 +104,18 @@ def run(args):
     
     # --- 2. Naive (Welch T-Test) ---
     if args.method in ['naive', 'all', 'fdr']:
-        print("\n--- 2. Calculando T-Test de Welch (Naive) ---")
+        print(f"\n--- 2. Calculando T-Test de Welch (Naive) [{'ROIs: ' + args.roi_method.upper() if args.use_rois else 'Canales'}] ---")
         _, p_values_raw = ttest_ind(D_FT_arr, D_PT_arr, axis=0, equal_var=False, nan_policy='omit')
         p_values_naive = np.transpose(p_values_raw, (2, 3, 1, 0)) # (dest, src, band, epoch)
         np.save(f"{prefix}_naive.npy", p_values_naive)
+        if args.use_rois and args.roi_method == 'mean':
+            np.save("plots/p_values_rois_naive.npy", p_values_naive)
         
-        export_interactive_3d_network(coords_3d, p_values_naive[:, :, 0, 0], global_node_names, filename=f"plots/red_naive_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
+        export_interactive_3d_network(coords_3d, p_values_naive[:, :, 0, 0], global_node_names, filename=f"plots/red_naive{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
         
     # --- 3. FDR (Benjamini-Hochberg) ---
     if args.method in ['fdr', 'all']:
-        print("\n--- 3. Corrección FDR (Benjamini-Hochberg) ---")
+        print(f"\n--- 3. Corrección FDR (Benjamini-Hochberg) [{'ROIs: ' + args.roi_method.upper() if args.use_rois else 'Canales'}] ---")
         p_values_fdr = np.zeros_like(p_values_naive)
         for e in range(p_values_naive.shape[3]):
             for b in range(p_values_naive.shape[2]):
@@ -127,7 +132,9 @@ def run(args):
                 p_values_fdr[:, :, b, e] = q_slice
                 
         np.save(f"{prefix}_fdr.npy", p_values_fdr)
-        export_interactive_3d_network(coords_3d, p_values_fdr[:, :, 0, 0], global_node_names, filename=f"plots/red_fdr_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
+        if args.use_rois and args.roi_method == 'mean':
+            np.save("plots/p_values_rois_fdr.npy", p_values_fdr)
+        export_interactive_3d_network(coords_3d, p_values_fdr[:, :, 0, 0], global_node_names, filename=f"plots/red_fdr{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
 
     # --- 4. TFCE (Permutaciones de Monte Carlo) ---
     if args.method in ['tfce', 'all']:
@@ -169,13 +176,15 @@ def run(args):
                             p_values_tfce[i, j, b, e] = np.sum(max_tfce_null >= val) / args.perms
                             
         np.save(f"{prefix}_tfce.npy", p_values_tfce)
-        export_interactive_3d_network(coords_3d, p_values_tfce[:, :, 0, 0], global_node_names, filename=f"plots/red_tfce_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
+        if args.use_rois and args.roi_method == 'mean':
+            np.save("plots/p_values_rois_tfce.npy", p_values_tfce)
+        export_interactive_3d_network(coords_3d, p_values_tfce[:, :, 0, 0], global_node_names, filename=f"plots/red_tfce{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
         
         tfce_temp_avg = np.mean(tfce_real[:, :, 0, :], axis=2) # Banda 0
         plot_tfce_heatmaps(tfce_temp_avg, band_names[0], r_val, output_dir="plots", node_names=global_node_names)
         
     # --- 5. Gráfico Final de Tendencias ---
-    if args.method == 'all':
+    if args.method in ['fdr', 'all']:
         print("\n--- 5. Generando visualizaciones consolidadas ---")
         expected_fp = (len(global_node_names) * (len(global_node_names) - 1)) * 0.05
         epochs_x = np.arange(global_min_epochs)
@@ -183,15 +192,28 @@ def run(args):
         for b_idx, b_name in enumerate(band_names):
             naive_counts = [np.nansum(p_values_naive[:, :, b_idx, e] < 0.05) for e in epochs_x]
             fdr_counts = [np.nansum(p_values_fdr[:, :, b_idx, e] < 0.05) for e in epochs_x]
-            tfce_counts = [np.nansum(p_values_tfce[:, :, b_idx, e] < 0.05) for e in epochs_x]
+            tfce_counts = [np.nansum(p_values_tfce[:, :, b_idx, e] < 0.05) for e in epochs_x] if p_values_tfce is not None else None
             
-            plot_edge_counts(epochs_x, naive_counts, fdr_counts, tfce_counts, expected_fp, b_name)
+            plot_edge_counts(
+                epochs_x, naive_counts, fdr_counts, tfce_counts, expected_fp, b_name,
+                output_dir="plots",
+                suffix=roi_suffix,
+                method_label=f"ROI: {args.roi_method.upper()}" if args.use_rois else "Canales"
+            )
+            
+        # Comparación de robustez automática si existen ambos análisis (mean y pca)
+        plot_robustness_comparison(
+            p_file_mean="plots/p_values_rois_mean_naive.npy",
+            p_file_pca="plots/p_values_rois_pca_naive.npy",
+            band_names=band_names,
+            output_dir="plots"
+        )
             
     print("\n¡PIPELINE COMPLETADO EXITOSAMENTE!")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Pipeline de Conectividad EEG")
-    parser.add_argument("--method", type=str, choices=['naive', 'fdr', 'tfce', 'all'], default='all', help="Método estadístico a correr")
+    parser.add_argument("--method", type=str, choices=['naive', 'fdr', 'tfce', 'all'], default='fdr', help="Método estadístico a correr (default: 'fdr')")
     parser.add_argument("--p", type=int, default=parameters.P_OPTIMO, help="Orden MVAR (default: parameters.P_OPTIMO)")
     parser.add_argument("--dh", type=float, default=0.1, help="Paso discreto dh para la integral TFCE")
     parser.add_argument("--R", type=float, default=None, help="Radio espacial (cm) para adyacencia TFCE (None = auto según modo)")

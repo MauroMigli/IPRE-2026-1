@@ -11693,5 +11693,6 @@
     "optimal_p_aic": 15,
     "optimal_p_bic": 15,
     "recommended_p": 15,
-    "total_epochs_evaluated": 5801
+    "total_epochs_evaluated": 5801,
+    "method": "mean"
 }

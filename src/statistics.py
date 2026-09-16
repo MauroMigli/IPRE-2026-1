@@ -98,11 +98,12 @@ def build_4d_graph(ch_adj, n_bands, n_epochs):
     return adj_4d
 
 
-def compute_welch_t_map(D_A, D_B):
+def compute_welch_t_map(D_A, D_B, return_abs=True):
     """
     Calcula el estadístico T de Welch para dos muestras independientes con varianzas desiguales.
     D_A y D_B son arrays donde el eje 0 representa a los sujetos.
     Retorna el mapa T de la misma forma que D_A y D_B (sin el eje 0).
+    Si return_abs es True, devuelve |t| (para TFCE positivo de 2 colas); si es False, devuelve t con signo.
     """
     n1 = D_A.shape[0]
     n2 = D_B.shape[0]
@@ -118,7 +119,7 @@ def compute_welch_t_map(D_A, D_B):
     t_stat = np.divide(mean1 - mean2, se_diff, out=np.zeros_like(mean1), where=se_diff!=0)
     t_stat = np.nan_to_num(t_stat)
     
-    return np.abs(t_stat)  # Absoluto para 2 colas
+    return np.abs(t_stat) if return_abs else t_stat
 
 
 def get_structuring_element(spatial_adjacency='null'):

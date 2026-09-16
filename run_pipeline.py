@@ -14,7 +14,7 @@ import parameters
 from src.preprocessing import get_valid_subjects
 from src.connectivity import load_and_compute_ddtf
 from src.statistics import compute_welch_t_map, get_spatial_adjacency_matrix, build_4d_graph, tfce_transform, fdrcorrect_bh, worker_permutation, get_3d_positions, get_roi_3d_centroids
-from src.visualization import plot_edge_counts, plot_aic_bic_histograms, export_interactive_3d_network, plot_tfce_heatmaps, plot_order_selection_curves, plot_robustness_comparison
+from src.visualization import plot_edge_counts, plot_aic_bic_histograms, export_interactive_3d_network, plot_tfce_heatmaps, plot_order_selection_curves, plot_robustness_comparison, plot_direction_counts, plot_t_matrix_heatmap
 from src.model_order import find_dataset_optimal_order
 
 def run(args):
@@ -99,19 +99,30 @@ def run(args):
         coords_3d = get_3d_positions(parameters.ELP_FILE, global_node_names)
     
     p_values_naive = None
+    t_values_naive = None
     p_values_fdr = None
     p_values_tfce = None
     
     # --- 2. Naive (Welch T-Test) ---
     if args.method in ['naive', 'all', 'fdr']:
         print(f"\n--- 2. Calculando T-Test de Welch (Naive) [{'ROIs: ' + args.roi_method.upper() if args.use_rois else 'Canales'}] ---")
-        _, p_values_raw = ttest_ind(D_FT_arr, D_PT_arr, axis=0, equal_var=False, nan_policy='omit')
+        t_values_raw, p_values_raw = ttest_ind(D_FT_arr, D_PT_arr, axis=0, equal_var=False, nan_policy='omit')
         p_values_naive = np.transpose(p_values_raw, (2, 3, 1, 0)) # (dest, src, band, epoch)
+        t_values_naive = np.transpose(t_values_raw, (2, 3, 1, 0)) # (dest, src, band, epoch)
+        
+        # Diferencia de medias empíricas (tamaño del efecto en dDTF: FT - PT)
+        mean_diff_raw = np.mean(D_FT_arr, axis=0) - np.mean(D_PT_arr, axis=0)
+        mean_diff = np.transpose(mean_diff_raw, (2, 3, 1, 0)) # (dest, src, band, epoch)
+        
         np.save(f"{prefix}_naive.npy", p_values_naive)
+        np.save(f"{prefix}_t_values.npy", t_values_naive)
+        np.save(f"{prefix}_mean_diff.npy", mean_diff)
         if args.use_rois and args.roi_method == 'mean':
             np.save("plots/p_values_rois_naive.npy", p_values_naive)
+            np.save("plots/p_values_rois_t_values.npy", t_values_naive)
+            np.save("plots/p_values_rois_mean_diff.npy", mean_diff)
         
-        export_interactive_3d_network(coords_3d, p_values_naive[:, :, 0, 0], global_node_names, filename=f"plots/red_naive{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
+        export_interactive_3d_network(coords_3d, p_values_naive[:, :, 0, 0], global_node_names, filename=f"plots/red_naive{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS, t_values=t_values_naive[:, :, 0, 0])
         
     # --- 3. FDR (Benjamini-Hochberg) ---
     if args.method in ['fdr', 'all']:
@@ -134,7 +145,7 @@ def run(args):
         np.save(f"{prefix}_fdr.npy", p_values_fdr)
         if args.use_rois and args.roi_method == 'mean':
             np.save("plots/p_values_rois_fdr.npy", p_values_fdr)
-        export_interactive_3d_network(coords_3d, p_values_fdr[:, :, 0, 0], global_node_names, filename=f"plots/red_fdr{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
+        export_interactive_3d_network(coords_3d, p_values_fdr[:, :, 0, 0], global_node_names, filename=f"plots/red_fdr{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS, t_values=t_values_naive[:, :, 0, 0] if t_values_naive is not None else None)
 
     # --- 4. TFCE (Permutaciones de Monte Carlo) ---
     if args.method in ['tfce', 'all']:
@@ -178,7 +189,7 @@ def run(args):
         np.save(f"{prefix}_tfce.npy", p_values_tfce)
         if args.use_rois and args.roi_method == 'mean':
             np.save("plots/p_values_rois_tfce.npy", p_values_tfce)
-        export_interactive_3d_network(coords_3d, p_values_tfce[:, :, 0, 0], global_node_names, filename=f"plots/red_tfce{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS)
+        export_interactive_3d_network(coords_3d, p_values_tfce[:, :, 0, 0], global_node_names, filename=f"plots/red_tfce{roi_suffix}_b0_e0.html", dropped_channels=None if args.use_rois else parameters.DROPPED_CHANNELS, t_values=t_values_naive[:, :, 0, 0] if t_values_naive is not None else None)
         
         tfce_temp_avg = np.mean(tfce_real[:, :, 0, :], axis=2) # Banda 0
         plot_tfce_heatmaps(tfce_temp_avg, band_names[0], r_val, output_dir="plots", node_names=global_node_names)
@@ -200,6 +211,29 @@ def run(args):
                 suffix=roi_suffix,
                 method_label=f"ROI: {args.roi_method.upper()}" if args.use_rois else "Canales"
             )
+            
+            # Desglose direccional de aristas (FT > PT vs PT > FT)
+            if t_values_naive is not None:
+                pos_counts = [np.nansum((p_values_naive[:, :, b_idx, e] < 0.05) & (t_values_naive[:, :, b_idx, e] > 0)) for e in epochs_x]
+                neg_counts = [np.nansum((p_values_naive[:, :, b_idx, e] < 0.05) & (t_values_naive[:, :, b_idx, e] < 0)) for e in epochs_x]
+                plot_direction_counts(
+                    epochs_x, pos_counts, neg_counts, expected_fp, b_name,
+                    output_dir="plots",
+                    suffix=roi_suffix,
+                    method_label=f"ROI: {args.roi_method.upper()}" if args.use_rois else "Canales"
+                )
+                
+                # Heatmap matricial t en la época con mayor actividad
+                peak_ep = int(np.argmax(naive_counts))
+                plot_t_matrix_heatmap(
+                    t_values_naive[:, :, b_idx, peak_ep],
+                    p_values_naive[:, :, b_idx, peak_ep],
+                    global_node_names,
+                    b_name,
+                    epoch_idx=peak_ep,
+                    output_dir="plots",
+                    suffix=roi_suffix
+                )
             
         # Comparación de robustez automática si existen ambos análisis (mean y pca)
         plot_robustness_comparison(

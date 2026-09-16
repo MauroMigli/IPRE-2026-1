@@ -130,15 +130,19 @@ def plot_order_selection_curves(lags, aic_means, bic_means, aic_votes, bic_votes
 # ==========================================
 # PLOT 3: Renderizado HTML 3D
 # ==========================================
-def export_interactive_3d_network(coords_3d, p_values, channel_names, filename="plots/red_3d.html", dropped_channels=None, hide_isolated=False):
+def export_interactive_3d_network(coords_3d, p_values, channel_names, filename="plots/red_3d.html", dropped_channels=None, hide_isolated=False, t_values=None):
     """
     Exporta un grafo 3D interactivo en HTML de la conectividad significativa.
+    Si se suministra t_values, colorea las aristas según la dirección del efecto:
+      - Rojo: t > 0 (FT > PT, mayor conectividad en recién nacidos a término)
+      - Azul: t < 0 (PT > FT, mayor conectividad en prematuros)
     """
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     
     channel_names = list(channel_names)
     coords_3d = np.asarray(coords_3d)
     p_values = np.asarray(p_values)
+    t_mat = np.asarray(t_values) if t_values is not None else None
 
     keep_mask = np.ones(len(channel_names), dtype=bool)
     if dropped_channels is not None:
@@ -161,6 +165,8 @@ def export_interactive_3d_network(coords_3d, p_values, channel_names, filename="
 
     coords_3d = coords_3d[keep_idx]
     p_values = p_values[np.ix_(keep_idx, keep_idx)]
+    if t_mat is not None:
+        t_mat = t_mat[np.ix_(keep_idx, keep_idx)]
     channel_names = [channel_names[i] for i in keep_idx]
     n_ch = len(channel_names)
     
@@ -178,40 +184,54 @@ def export_interactive_3d_network(coords_3d, p_values, channel_names, filename="
     )
     
     edge_traces = []
-    for i in range(n_ch):
-        for j in range(n_ch):
+    for i in range(n_ch):       # dest
+        for j in range(n_ch):   # src
             if i != j and not np.isnan(p_values[i, j]) and p_values[i, j] < p_threshold:
                 pval = p_values[i, j]
                 
-                if pval < highly_sig_threshold:
-                    color = 'darkred'
-                    width = 4
+                if t_mat is not None and not np.isnan(t_mat[i, j]):
+                    t_val = t_mat[i, j]
+                    is_pos = (t_val > 0)
+                    dir_str = "FT > PT" if is_pos else "PT > FT"
+                    t_str = f", t = {t_val:+.2f} ({dir_str})"
+                    color = ('#b71c1c' if pval < highly_sig_threshold else '#e74c3c') if is_pos else ('#0d47a1' if pval < highly_sig_threshold else '#1f77b4')
                 else:
-                    color = 'red'
-                    width = 2
+                    t_str = ""
+                    color = 'darkred' if pval < highly_sig_threshold else 'red'
+                    
+                width = 4 if pval < highly_sig_threshold else 2.5
                     
                 edge_trace = go.Scatter3d(
-                    x=[xs[i], xs[j], None],
-                    y=[ys[i], ys[j], None],
-                    z=[zs[i], zs[j], None],
+                    x=[xs[j], xs[i], None],
+                    y=[ys[j], ys[i], None],
+                    z=[zs[j], zs[i], None],
                     mode='lines',
                     line=dict(color=color, width=width),
                     hoverinfo='text',
-                    text=[f"{channel_names[i]} -> {channel_names[j]} (p={pval:.4f})"],
+                    text=[f"{channel_names[j]} → {channel_names[i]} (p={pval:.4f}{t_str})"],
                     name='Conexión'
                 )
                 edge_traces.append(edge_trace)
 
     fig = go.Figure(data=[nodos_trace] + edge_traces)
+    
+    title_text = "Red de Conectividad Significativa (3D)"
+    if t_mat is not None:
+        title_text += (
+            "<br><sup><span style='color:#e74c3c;font-weight:bold;'>■ FT > PT (t > 0)</span>"
+            " &nbsp;&nbsp;&nbsp;&nbsp; "
+            "<span style='color:#1f77b4;font-weight:bold;'>■ PT > FT (t < 0)</span></sup>"
+        )
+        
     fig.update_layout(
-        title="Red de Conectividad Significativa (3D)",
+        title=dict(text=title_text, x=0.5, font=dict(size=14)),
         showlegend=False,
         scene=dict(
             xaxis=dict(showbackground=False, showticklabels=False, title=''),
             yaxis=dict(showbackground=False, showticklabels=False, title=''),
             zaxis=dict(showbackground=False, showticklabels=False, title='')
         ),
-        margin=dict(l=0, r=0, b=0, t=40)
+        margin=dict(l=0, r=0, b=0, t=50)
     )
     pyo.plot(fig, filename=filename, auto_open=False)
 
@@ -263,11 +283,15 @@ def export_interactive_temporal_3d_network(
     band_name,
     filename="plots/red_temporal_3d.html",
     p_threshold=0.05,
-    epoch_duration=0.5
+    epoch_duration=0.5,
+    t_values_band=None
 ):
     """
     Exporta un grafo 3D interactivo en HTML con un slider temporal y botones de reproducción
     para observar la evolución de las conexiones significativas a través de las épocas.
+    Si se suministra t_values_band, colorea las aristas según el signo de t:
+      - Rojo: t > 0 (FT > PT, mayor reactividad en a término)
+      - Azul: t < 0 (PT > FT, mayor reactividad en prematuros)
     
     Parámetros:
     -----------
@@ -278,6 +302,7 @@ def export_interactive_temporal_3d_network(
     filename: ruta del archivo HTML de salida
     p_threshold: umbral de significancia (default: 0.05)
     epoch_duration: duración de cada época en segundos (default: 0.5s)
+    t_values_band: (n_dest, n_src, n_epochs) opcional matriz de estadísticos t
     """
     if go is None or pyo is None:
         raise ImportError("plotly es requerido para exportar gráficos 3D interactivos.")
@@ -287,6 +312,8 @@ def export_interactive_temporal_3d_network(
     node_names = list(node_names)
     coords_3d = np.asarray(coords_3d)
     p_values_band = np.asarray(p_values_band)
+    has_t = (t_values_band is not None)
+    t_band = np.asarray(t_values_band) if has_t else None
     
     n_nodes = len(node_names)
     n_epochs = p_values_band.shape[2]
@@ -307,51 +334,119 @@ def export_interactive_temporal_3d_network(
     all_traces = [nodes_trace]
     
     sig_counts_per_ep = []
+    sig_counts_pos = []
+    sig_counts_neg = []
+    
     for e in range(n_epochs):
         p_ep = p_values_band[:, :, e].copy()
         np.fill_diagonal(p_ep, np.nan)
-        sig_counts_per_ep.append(int(np.nansum(p_ep < p_threshold)))
+        mask_sig = (p_ep < p_threshold) & ~np.isnan(p_ep)
+        sig_counts_per_ep.append(int(np.sum(mask_sig)))
+        
+        if has_t:
+            t_ep = t_band[:, :, e]
+            sig_counts_pos.append(int(np.sum(mask_sig & (t_ep > 0))))
+            sig_counts_neg.append(int(np.sum(mask_sig & (t_ep < 0))))
+        else:
+            sig_counts_pos.append(int(np.sum(mask_sig)))
+            sig_counts_neg.append(0)
         
     default_ep = int(np.argmax(sig_counts_per_ep))
     
     for e in range(n_epochs):
         p_ep = p_values_band[:, :, e]
-        edge_x, edge_y, edge_z = [], [], []
-        edge_hover = []
+        t_ep = t_band[:, :, e] if has_t else None
         
-        for dest in range(n_nodes):
-            for src in range(n_nodes):
-                if dest != src and not np.isnan(p_ep[dest, src]) and p_ep[dest, src] < p_threshold:
-                    pval = p_ep[dest, src]
-                    edge_x.extend([xs[src], xs[dest], None])
-                    edge_y.extend([ys[src], ys[dest], None])
-                    edge_z.extend([zs[src], zs[dest], None])
-                    hover_txt = f"{node_names[src]} → {node_names[dest]} (p = {pval:.4f})"
-                    edge_hover.extend([hover_txt, hover_txt, None])
-                    
-        edge_trace = go.Scatter3d(
-            x=edge_x, y=edge_y, z=edge_z,
-            mode='lines',
-            line=dict(color='red', width=3.5),
-            hoverinfo='text',
-            text=edge_hover,
-            name=f'Época {e}',
-            visible=(e == default_ep)
-        )
-        all_traces.append(edge_trace)
+        if has_t:
+            pos_x, pos_y, pos_z, pos_hover = [], [], [], []
+            neg_x, neg_y, neg_z, neg_hover = [], [], [], []
+            
+            for dest in range(n_nodes):
+                for src in range(n_nodes):
+                    if dest != src and not np.isnan(p_ep[dest, src]) and p_ep[dest, src] < p_threshold:
+                        pval = p_ep[dest, src]
+                        tval = t_ep[dest, src]
+                        
+                        if tval > 0:
+                            pos_x.extend([xs[src], xs[dest], None])
+                            pos_y.extend([ys[src], ys[dest], None])
+                            pos_z.extend([zs[src], zs[dest], None])
+                            hover_txt = f"{node_names[src]} → {node_names[dest]} (t = {tval:+.2f}, p = {pval:.4f}) [FT > PT]"
+                            pos_hover.extend([hover_txt, hover_txt, None])
+                        else:
+                            neg_x.extend([xs[src], xs[dest], None])
+                            neg_y.extend([ys[src], ys[dest], None])
+                            neg_z.extend([zs[src], zs[dest], None])
+                            hover_txt = f"{node_names[src]} → {node_names[dest]} (t = {tval:+.2f}, p = {pval:.4f}) [PT > FT]"
+                            neg_hover.extend([hover_txt, hover_txt, None])
+                            
+            trace_pos = go.Scatter3d(
+                x=pos_x, y=pos_y, z=pos_z,
+                mode='lines',
+                line=dict(color='#e74c3c', width=3.5),
+                hoverinfo='text',
+                text=pos_hover,
+                name=f'FT > PT (Ep {e})',
+                visible=(e == default_ep)
+            )
+            trace_neg = go.Scatter3d(
+                x=neg_x, y=neg_y, z=neg_z,
+                mode='lines',
+                line=dict(color='#1f77b4', width=3.5),
+                hoverinfo='text',
+                text=neg_hover,
+                name=f'PT > FT (Ep {e})',
+                visible=(e == default_ep)
+            )
+            all_traces.extend([trace_pos, trace_neg])
+        else:
+            edge_x, edge_y, edge_z, edge_hover = [], [], [], []
+            for dest in range(n_nodes):
+                for src in range(n_nodes):
+                    if dest != src and not np.isnan(p_ep[dest, src]) and p_ep[dest, src] < p_threshold:
+                        pval = p_ep[dest, src]
+                        edge_x.extend([xs[src], xs[dest], None])
+                        edge_y.extend([ys[src], ys[dest], None])
+                        edge_z.extend([zs[src], zs[dest], None])
+                        hover_txt = f"{node_names[src]} → {node_names[dest]} (p = {pval:.4f})"
+                        edge_hover.extend([hover_txt, hover_txt, None])
+                        
+            edge_trace = go.Scatter3d(
+                x=edge_x, y=edge_y, z=edge_z,
+                mode='lines',
+                line=dict(color='red', width=3.5),
+                hoverinfo='text',
+                text=edge_hover,
+                name=f'Época {e}',
+                visible=(e == default_ep)
+            )
+            all_traces.append(edge_trace)
         
     steps = []
+    traces_per_epoch = 2 if has_t else 1
+    
     for e in range(n_epochs):
-        visibility = [True] + [(idx == e) for idx in range(n_epochs)]
+        visibility = [True] + [((idx // traces_per_epoch) == e) for idx in range(n_epochs * traces_per_epoch)]
         t_start = e * epoch_duration
         t_end = (e + 1) * epoch_duration
         count = sig_counts_per_ep[e]
         
-        title_text = (
-            f"Conectividad Temporal (3D) - Banda {band_name}<br>"
-            f"<sup>Época {e} ({t_start:.1f}s - {t_end:.1f}s) | "
-            f"<b>{count}</b> conexiones significativas (p < {p_threshold})</sup>"
-        )
+        if has_t:
+            count_pos = sig_counts_pos[e]
+            count_neg = sig_counts_neg[e]
+            title_text = (
+                f"Conectividad Temporal (3D) - Banda {band_name}<br>"
+                f"<sup>Época {e} ({t_start:.1f}s - {t_end:.1f}s) | "
+                f"<b>{count}</b> conexiones (p < {p_threshold}) : "
+                f"<span style='color:#e74c3c;font-weight:bold;'>{count_pos} FT > PT</span> | "
+                f"<span style='color:#1f77b4;font-weight:bold;'>{count_neg} PT > FT</span></sup>"
+            )
+        else:
+            title_text = (
+                f"Conectividad Temporal (3D) - Banda {band_name}<br>"
+                f"<sup>Época {e} ({t_start:.1f}s - {t_end:.1f}s) | "
+                f"<b>{count}</b> conexiones significativas (p < {p_threshold})</sup>"
+            )
         
         step = dict(
             method="update",
@@ -397,37 +492,72 @@ def export_interactive_temporal_3d_network(
     
     frames = []
     for e in range(n_epochs):
-        vis = [True] + [(idx == e) for idx in range(n_epochs)]
         t_start = e * epoch_duration
         t_end = (e + 1) * epoch_duration
         count = sig_counts_per_ep[e]
         
-        title_text = (
-            f"Conectividad Temporal (3D) - Banda {band_name}<br>"
-            f"<sup>Época {e} ({t_start:.1f}s - {t_end:.1f}s) | "
-            f"<b>{count}</b> conexiones significativas (p < {p_threshold})</sup>"
-        )
+        if has_t:
+            count_pos = sig_counts_pos[e]
+            count_neg = sig_counts_neg[e]
+            title_text = (
+                f"Conectividad Temporal (3D) - Banda {band_name}<br>"
+                f"<sup>Época {e} ({t_start:.1f}s - {t_end:.1f}s) | "
+                f"<b>{count}</b> conexiones (p < {p_threshold}) : "
+                f"<span style='color:#e74c3c;font-weight:bold;'>{count_pos} FT > PT</span> | "
+                f"<span style='color:#1f77b4;font-weight:bold;'>{count_neg} PT > FT</span></sup>"
+            )
+        else:
+            title_text = (
+                f"Conectividad Temporal (3D) - Banda {band_name}<br>"
+                f"<sup>Época {e} ({t_start:.1f}s - {t_end:.1f}s) | "
+                f"<b>{count}</b> conexiones significativas (p < {p_threshold})</sup>"
+            )
         
+        frame_traces = [all_traces[0]]
+        for k in range(n_epochs * traces_per_epoch):
+            frame_traces.append(go.Scatter3d(visible=((k // traces_per_epoch) == e)))
+            
         frame = go.Frame(
-            data=[all_traces[0]] + [
-                go.Scatter3d(visible=(idx == e)) for idx in range(n_epochs)
-            ],
+            data=frame_traces,
             name=f"Ep {e}",
             layout=dict(title_text=title_text)
         )
         frames.append(frame)
         
-    initial_title = (
-        f"Conectividad Temporal (3D) - Banda {band_name}<br>"
-        f"<sup>Época {default_ep} ({default_ep*epoch_duration:.1f}s - {(default_ep+1)*epoch_duration:.1f}s) | "
-        f"<b>{sig_counts_per_ep[default_ep]}</b> conexiones significativas (p < {p_threshold})</sup>"
-    )
+    t_start_def = default_ep * epoch_duration
+    t_end_def = (default_ep + 1) * epoch_duration
+    if has_t:
+        initial_title = (
+            f"Conectividad Temporal (3D) - Banda {band_name}<br>"
+            f"<sup>Época {default_ep} ({t_start_def:.1f}s - {t_end_def:.1f}s) | "
+            f"<b>{sig_counts_per_ep[default_ep]}</b> conexiones (p < {p_threshold}) : "
+            f"<span style='color:#e74c3c;font-weight:bold;'>{sig_counts_pos[default_ep]} FT > PT</span> | "
+            f"<span style='color:#1f77b4;font-weight:bold;'>{sig_counts_neg[default_ep]} PT > FT</span></sup>"
+        )
+    else:
+        initial_title = (
+            f"Conectividad Temporal (3D) - Banda {band_name}<br>"
+            f"<sup>Época {default_ep} ({t_start_def:.1f}s - {t_end_def:.1f}s) | "
+            f"<b>{sig_counts_per_ep[default_ep]}</b> conexiones significativas (p < {p_threshold})</sup>"
+        )
+    
+    annotations = [
+        dict(
+            text="<span style='color:#e74c3c;font-weight:bold;'>■ FT > PT (t > 0)</span> &nbsp;&nbsp;&nbsp;&nbsp; <span style='color:#1f77b4;font-weight:bold;'>■ PT > FT (t < 0)</span>",
+            showarrow=False,
+            xref="paper", yref="paper",
+            x=0.5, y=0.98,
+            xanchor="center", yanchor="top",
+            font=dict(size=13)
+        )
+    ] if has_t else []
     
     fig = go.Figure(
         data=all_traces,
         layout=go.Layout(
             title=dict(text=initial_title, x=0.5, font=dict(size=15)),
             showlegend=False,
+            annotations=annotations,
             scene=dict(
                 xaxis=dict(showbackground=False, showticklabels=False, title=''),
                 yaxis=dict(showbackground=False, showticklabels=False, title=''),
@@ -508,4 +638,109 @@ def plot_robustness_comparison(p_file_mean="plots/p_values_rois_mean_naive.npy",
     plt.close()
     print(f"[ROBUSTEZ] Gráfico comparativo generado: {out_path}")
     return out_path
+
+
+# ==============================================================================
+# PLOT 6: Evolución Temporal Desglosada por Dirección del Signo t (FT vs PT)
+# ==============================================================================
+def plot_direction_counts(epochs_x, pos_counts, neg_counts, expected_fp, band_name, output_dir="plots", suffix="", method_label=None):
+    """
+    Genera el gráfico temporal desglosado por dirección del efecto estadístico:
+    - Conexiones con t > 0 (FT > PT, rojo: mayor reactividad en a término)
+    - Conexiones con t < 0 (PT > FT, azul: mayor reactividad en prematuros)
+    - Total de aristas significativas (línea negra punteada)
+    - Esperanza matemática de falsos positivos E[FP] (línea gris discontinua)
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    plt.figure(figsize=(10, 6))
+    
+    total_counts = np.array(pos_counts) + np.array(neg_counts)
+    
+    plt.plot(epochs_x, total_counts, marker='o', color='black', linestyle=':', lw=1.5, alpha=0.6, label='Total Significativas (p < 0.05)')
+    plt.plot(epochs_x, pos_counts, marker='^', color='#d62728', lw=2.2, label='FT > PT (t > 0, mayor respuesta en Término)')
+    plt.plot(epochs_x, neg_counts, marker='v', color='#1f77b4', lw=2.2, label='PT > FT (t < 0, mayor respuesta en Prematuro)')
+    
+    # Línea teórica de Falsos Positivos
+    plt.axhline(y=expected_fp, color='gray', linestyle='--', alpha=0.7, label=f'Esperanza FP (E[FP] = {expected_fp:.1f})')
+    
+    method_str = f" [{method_label}]" if method_label else ""
+    plt.title(f'Dirección de Conectividad Significativa (Signo t) - Banda {band_name}{method_str}', fontsize=12)
+    plt.xlabel('Época (Tiempo)', fontsize=11)
+    plt.ylabel('Cantidad de Conexiones', fontsize=11)
+    plt.xticks(epochs_x)
+    plt.legend(fontsize=10)
+    plt.grid(True, linestyle='--', alpha=0.6)
+    
+    filename = os.path.join(output_dir, f'edge_counts_direction_{band_name}{suffix}.png')
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    if suffix == "_mean":
+        plt.savefig(os.path.join(output_dir, f'edge_counts_direction_{band_name}.png'), bbox_inches='tight', dpi=300)
+    plt.close()
+
+
+# ==============================================================================
+# PLOT 7: Matriz Direccional t de Welch con Mapa Divergente y Significatividad
+# ==============================================================================
+def plot_t_matrix_heatmap(t_matrix, p_matrix, node_names, band_name, epoch_idx, output_dir="plots", suffix="", vmin=None, vmax=None):
+    """
+    Genera un mapa de calor (heatmap 2D) de la matriz de adyacencia dirigida origen -> destino
+    con colormap divergente centrado en 0 (azul para t < 0, rojo para t > 0).
+    Anota los valores t e indica significatividad estadística (* si p < 0.05, ** si p < 0.01).
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    n_nodes = len(node_names)
+    
+    # Excluir diagonal
+    t_plot = np.array(t_matrix, dtype=float).copy()
+    p_plot = np.array(p_matrix, dtype=float).copy()
+    np.fill_diagonal(t_plot, np.nan)
+    np.fill_diagonal(p_plot, np.nan)
+    
+    # Límite simétrico de color
+    max_abs = np.nanmax(np.abs(t_plot)) if np.any(~np.isnan(t_plot)) else 3.0
+    if max_abs == 0 or np.isnan(max_abs): max_abs = 3.0
+    if vmax is None: vmax = max(max_abs, 2.5)
+    if vmin is None: vmin = -vmax
+    
+    fig, ax = plt.subplots(figsize=(9, 8))
+    cax = ax.imshow(t_plot, cmap='coolwarm', vmin=vmin, vmax=vmax, aspect='auto')
+    
+    cbar = fig.colorbar(cax, ax=ax, fraction=0.046, pad=0.04)
+    cbar.set_label('Estadístico t de Welch (Azul: PT > FT | Rojo: FT > PT)', fontsize=11)
+    
+    ticks = np.arange(n_nodes)
+    ax.set_xticks(ticks)
+    ax.set_xticklabels(node_names, rotation=45, ha='right', fontsize=9)
+    ax.set_yticks(ticks)
+    ax.set_yticklabels(node_names, fontsize=9)
+    
+    ax.set_xlabel('Super-Nodo Origen (src)', fontsize=11)
+    ax.set_ylabel('Super-Nodo Destino (dest)', fontsize=11)
+    ax.set_title(f'Matriz Direccional t de Welch - Banda {band_name} (Época {epoch_idx})\n[* p < 0.05, ** p < 0.01]', fontsize=12)
+    
+    # Anotación textual por celda
+    for i in range(n_nodes):       # dest
+        for j in range(n_nodes):   # src
+            if i == j or np.isnan(t_plot[i, j]):
+                continue
+            t_val = t_plot[i, j]
+            p_val = p_plot[i, j]
+            
+            sig_star = ""
+            if p_val < 0.01:
+                sig_star = "**"
+            elif p_val < 0.05:
+                sig_star = "*"
+                
+            text_color = "white" if abs(t_val) > (vmax * 0.55) else "black"
+            fontweight = "bold" if sig_star else "normal"
+            ax.text(j, i, f"{t_val:+.2f}{sig_star}", ha="center", va="center", color=text_color, fontsize=8, fontweight=fontweight)
+            
+    plt.tight_layout()
+    filename = os.path.join(output_dir, f't_heatmap_{band_name}_e{epoch_idx}{suffix}.png')
+    plt.savefig(filename, bbox_inches='tight', dpi=300)
+    if suffix == "_mean":
+        plt.savefig(os.path.join(output_dir, f't_heatmap_{band_name}_e{epoch_idx}.png'), bbox_inches='tight', dpi=300)
+    plt.close()
+
 

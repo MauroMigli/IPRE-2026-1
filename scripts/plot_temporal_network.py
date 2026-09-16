@@ -111,6 +111,24 @@ def main():
         b_idx = band_names.index(b_name)
         p_band = p_values[:, :, b_idx, :]  # (dest, src, epoch)
         
+        # Cargar t-values correspondientes si existen
+        t_candidates = [
+            args.p_file.replace("_naive.npy", "_t_values.npy"),
+            args.p_file.replace(".npy", "_t_values.npy"),
+            f"plots/p_values_rois_{args.roi_method}_t_values.npy",
+            "plots/p_values_rois_t_values.npy"
+        ]
+        t_band = None
+        for cand in t_candidates:
+            if os.path.exists(cand):
+                try:
+                    t_all = np.load(cand)
+                    if t_all.shape == p_values.shape:
+                        t_band = t_all[:, :, b_idx, :]
+                        break
+                except Exception:
+                    pass
+        
         out_html = os.path.join(args.output_dir, f"red_temporal_{b_name}_{args.roi_method}.html")
         try:
             export_interactive_temporal_3d_network(
@@ -120,7 +138,8 @@ def main():
                 band_name=b_name,
                 filename=out_html,
                 p_threshold=args.p_threshold,
-                epoch_duration=parameters.EPOCH_DURATION_S
+                epoch_duration=parameters.EPOCH_DURATION_S,
+                t_values_band=t_band
             )
             if args.roi_method == "mean":
                 # Guardar copia base sin sufijo

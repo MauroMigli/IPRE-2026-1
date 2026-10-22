@@ -20,8 +20,9 @@ graph TD
     F -->|Promedio por banda, hb - si| G[(Contraste por sujeto: 2 bandas x 56 aristas)]
     G --> H{Estadística}
     H -->|t pareado, todos los sujetos| I[Efecto de condición]
-    H -->|Welch FT vs PT| J[Interacción grupo x condición]
-    I & J -->|FDR único sobre 112 pruebas / TFCE + permutaciones| K[Heatmaps, redes 3D, robustez Mean vs PCA]
+    H -->|Welch FT vs PT, promedio de condiciones| L[Efecto principal de grupo + prueba global]
+    H -->|Welch FT vs PT sobre hb - si| J[Interacción grupo x condición]
+    I & L & J -->|FDR único sobre 112 pruebas / TFCE + permutaciones| K[Heatmaps, redes 3D, robustez Mean vs PCA]
 ```
 
 ## Decisiones metodológicas
@@ -44,27 +45,36 @@ Cada decisión responde a una propiedad medida de los datos, no a una preferenci
 
 ### Estadística
 
-Por sujeto se calcula $D = \text{dDTF}_{hb} - \text{dDTF}_{si}$ promediado por banda → 2 bandas × 56 aristas dirigidas = **112 pruebas** (antes 3.360).
+Por sujeto y banda se calculan $D = \text{dDTF}_{hb} - \text{dDTF}_{si}$ (respuesta al estímulo) y $M = (\text{dDTF}_{hb} + \text{dDTF}_{si})/2$ (nivel basal). Cada contraste por aristas son 2 bandas × 56 aristas dirigidas = **112 pruebas** (antes 3.360).
 
 1. **Efecto de condición** (chequeo de cordura): t pareado de $D$ sobre todos los sujetos.
-2. **Interacción grupo × condición**: Welch FT vs PT sobre $D$.
-3. **FDR (Benjamini-Hochberg) en una sola familia** con las 112 pruebas. Opcional: **TFCE** sobre el grafo (destino, origen, banda) con permutaciones de etiquetas de grupo y estadístico máximo (FWER).
-4. **Robustez**: correlación de los mapas t con agregación `mean` vs `pca`.
-5. **Potencia espectral** (`scripts/power_contrast.py`): los mismos contrastes sobre log-potencia por ROI, para saber si el estímulo produce algún efecto en el EEG.
+2. **Efecto principal de grupo**: Welch FT vs PT sobre $M$, por arista, más una **prueba global** (dDTF medio sobre las 56 aristas, una prueba por banda, Bonferroni sobre 2 bandas).
+3. **Interacción grupo × condición**: Welch FT vs PT sobre $D$.
+4. **FDR (Benjamini-Hochberg) en una sola familia** con las 112 pruebas de cada contraste. Opcional: **TFCE** sobre el grafo (destino, origen, banda) con permutaciones de etiquetas de grupo y estadístico máximo (FWER), para grupo e interacción.
+5. **Robustez**: correlación de los mapas t del efecto de grupo con agregación `mean` vs `pca`.
+6. **Conducción de volumen** (`scripts/volume_conduction_check.py`): repite el contraste FT vs PT con medidas que usan solo rezagos (PDC, DTF), solo lag cero (correlación residual) o lo excluyen (coherencia imaginaria).
+7. **Potencia espectral** (`scripts/power_contrast.py`): los mismos contrastes sobre log-potencia por ROI, para saber si el estímulo produce algún efecto en el EEG.
 
 ## Resultados (80 sujetos: 53 FT, 27 PT)
 
 | Análisis | p < 0.05 sin corregir | Esperado por azar | Sobreviven corrección |
 |---|---|---|---|
 | dDTF, efecto de condición (Mean) | 9 / 112 | 5.6 | 0 (q mín = 0.39) |
-| dDTF, FT vs PT (Mean) | 7 / 112 | 5.6 | 0 (q mín = 0.21; TFCE p mín = 0.09) |
+| **dDTF, efecto de grupo (Mean)** | **23 / 112, todas PT > FT** | 5.6 | 0 FDR (q mín = 0.055); **4 TFCE** (FWER < 0.05) |
+| **dDTF global, efecto de grupo (Mean)** | — | — | **Delta p = 0.002, Theta p = 0.009** (PT/FT ≈ 1.26) |
+| dDTF, interacción (Mean) | 7 / 112 | 5.6 | 0 (q mín = 0.21; TFCE p mín = 0.09) |
 | dDTF, efecto de condición (PCA) | 8 / 112 | 5.6 | 0 (q mín = 0.61) |
-| dDTF, FT vs PT (PCA) | 8 / 112 | 5.6 | 0 (q mín = 0.46) |
+| **dDTF, efecto de grupo (PCA)** | **20 / 112** | 5.6 | **5 FDR** (q mín = 0.005) |
+| **dDTF global, efecto de grupo (PCA)** | — | — | **Delta p = 0.0005, Theta p = 0.0009** |
+| dDTF, interacción (PCA) | 8 / 112 | 5.6 | 0 (q mín = 0.46) |
 | **Potencia Delta, efecto de condición** | **8 / 8 ROIs** | 0.4 | **8 (q ≤ 0.008), hb > si** |
 | Potencia Delta, FT vs PT | 3 / 8 ROIs | 0.4 | 0 (q mín = 0.088; tendencia PT > FT en frontal/central) |
 | Potencia Theta (condición y grupo) | 0 / 8 | 0.4 | 0 |
 
-**Lectura:** el estímulo *heartbeat* aumenta robustamente la potencia Delta en todo el cuero cabelludo, pero no produce cambios detectables en la conectividad dirigida (dDTF) entre ROIs, ni en general ni de forma distinta entre FT y PT. El resultado nulo de conectividad **no** se explica por datos vacíos ni por una corrección demasiado estricta: el conteo sin corregir es indistinguible del azar. Robustez Mean vs PCA de los mapas t: r = 0.73 (Delta), 0.66 (Theta).
+**Lectura:**
+* El estímulo *heartbeat* aumenta robustamente la potencia Delta en todo el cuero cabelludo, pero **no** cambia la conectividad dirigida (dDTF) entre ROIs, en ningún grupo.
+* Independientemente de la condición, **los PT muestran ~26 % más dDTF que los FT** en Delta y Theta. Todas las aristas nominalmente significativas van en esa dirección; el efecto se replica con PCA (r = 0.80 / 0.73 entre mapas t), sobrevive a un test de rangos (Mann-Whitney p = 0.0006 / 0.001), a excluir al sujeto PT más extremo y a controlar por cantidad de datos por registro. La arista Frontal_Lateral_L → Central_Motor_R (Theta) sobrevive corrección con ambos métodos.
+* **Exploratorio:** el efecto de grupo se identificó después de mirar los datos. Los grupos están pareados por edad corregida, lo que descarta la maduración. Queda la conducción de volumen (tamaño cefálico): el efecto aparece en medidas solo-rezago (PDC: PT/FT = 1.14 / 1.18, p ≤ 0.0004), lo que argumenta contra una mezcla puramente instantánea, pero el acoplamiento de lag cero también es mayor en PT (correlación residual 1.13, p = 0.001) y la coherencia imaginaria no es significativa. Falta controlar por perímetro cefálico.
 
 > Los resultados anteriores (500 Hz, 5 bandas, 12 épocas, incluido el "pico Gamma en la época 1") están en `archive/legacy_plots/rois_500hz_epochwise/` y no son interpretables: Gamma no contiene señal EEG en estos archivos.
 
@@ -81,6 +91,9 @@ python run_pipeline.py --roi-method pca
 # 3. Chequeo de cordura con potencia espectral, e informe de robustez
 python scripts/power_contrast.py
 python scripts/compare_robustness.py
+
+# 4. Descomposición del efecto de grupo: acoplamiento con rezago vs lag cero
+python scripts/volume_conduction_check.py
 
 # Tests (simulaciones con conectividad conocida)
 python -m unittest discover tests
@@ -103,26 +116,32 @@ Todo está centralizado en `parameters.py`: rutas de datos, canales descartados,
 ## Output Structure
 
 Todo en `plots/` (sufijo `_mean` / `_pca`):
-- **`ddtf_contrast_*.npz`**: contraste por sujeto $D$ (n_sujetos × bandas × destino × origen), grupos e IDs.
-- **`t_values_{condition,group}_*.npy`**, **`p_values_{condition,group}_*_{naive,fdr,tfce}.npy`**: mapas (destino, origen, banda).
-- **`contrast_{condition,group}_*.png`**: heatmaps de t con marcas de significancia.
-- **`red_group_naive_*_{Delta,Theta}.html`**: redes 3D interactivas (p < 0.05 sin corregir, exploratorio).
+- **`ddtf_contrast_*.npz`** (local, no versionado): dDTF por sujeto y condición (`HB`, `SI`, `D`), grupos e IDs.
+- **`t_values_{condition,group,interaction}_*.npy`**, **`p_values_{condition,group,interaction}_*_{naive,fdr,tfce}.npy`**: mapas (destino, origen, banda).
+- **`contrast_{condition,group,interaction}_*.png`**: heatmaps de t con marcas de significancia.
+- **`group_condition_global_*.png`**: gráfico de interacción del dDTF medio (grupo × condición, con sujetos individuales).
+- **`red_group_naive_*_{Delta,Theta}.html`**: redes 3D interactivas del efecto de grupo (p < 0.05 sin corregir, exploratorio).
 - **`mvar_order_selection_*`**, **`robustness_comparison_mean_vs_pca.png`**, **`power_contrast_*.npz`**.
 - **`archive/`**: formulaciones anteriores (canal a canal bivariado; ROIs a 500 Hz por época) y sus resultados.
 
 ## Figures
 
 <div align="center">
+  <img src="plots/group_condition_global_mean.png" alt="Group x condition" width="85%" />
+  <p><em><b>Figure 1:</b> dDTF medio sobre las 56 aristas por grupo y condición. Las líneas de grupo son casi paralelas y casi planas (sin efecto de condición ni interacción), pero PT está uniformemente por encima de FT (p = 0.002 Delta, 0.009 Theta).</em></p>
+</div>
+<br>
+<div align="center">
   <img src="plots/contrast_group_mean.png" alt="FT vs PT contrast" width="90%" />
-  <p><em><b>Figure 1:</b> Contraste FT vs PT sobre (heartbeat − silencio) del dDTF, bandas Delta y Theta. Ninguna arista sobrevive FDR; el número de aristas con p &lt; 0.05 sin corregir (7/112) es el esperado por azar.</em></p>
+  <p><em><b>Figure 2:</b> Efecto principal de grupo por arista (t de Welch, FT − PT): azul = PT &gt; FT. Las 23 aristas con p &lt; 0.05 son azules.</em></p>
 </div>
 <br>
 <div align="center">
   <img src="plots/mvar_order_selection_curves_mean.png" alt="MVAR Order Selection AIC/BIC Curves" width="85%" />
-  <p><em><b>Figure 2:</b> Selección de orden del MVAR multi-ensayo a 20 Hz sobre los 160 registros. BIC alcanza su mínimo en p = 3.</em></p>
+  <p><em><b>Figure 3:</b> Selección de orden del MVAR multi-ensayo a 20 Hz sobre los 160 registros. BIC alcanza su mínimo en p = 3.</em></p>
 </div>
 <br>
 <div align="center">
   <img src="data/mapaElectrodes.jpg" alt="Map of electrodes" width="60%" />
-  <p><em><b>Figure 3:</b> Map of channels.</em></p>
+  <p><em><b>Figure 4:</b> Map of channels.</em></p>
 </div>

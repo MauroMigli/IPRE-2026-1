@@ -12,7 +12,7 @@ import parameters
 from src.preprocessing import get_valid_subjects
 from src.connectivity import load_and_compute_ddtf
 from src.statistics import compute_welch_t_map, get_spatial_adjacency_matrix, build_edge_band_graph, tfce_transform, fdrcorrect_bh, worker_permutation, get_roi_3d_centroids
-from src.visualization import export_interactive_3d_network, plot_contrast_heatmaps, plot_order_selection_curves, plot_robustness_comparison
+from src.visualization import export_interactive_3d_network, plot_contrast_heatmaps, plot_group_condition_means, plot_order_selection_curves, plot_robustness_comparison
 from src.model_order import find_dataset_optimal_order
 
 
@@ -31,6 +31,32 @@ def fdr_over_edges(p_map):
     q_map = np.full_like(p_map, np.nan)
     q_map[off_diag] = fdrcorrect_bh(p_map[off_diag])
     return q_map
+
+
+def group_contrast(A, B):
+    """Welch FT vs PT por arista y banda. A, B: (n_subj, n_bands, dest, src) -> mapas (dest, src, band)."""
+    t_map, p_map = ttest_ind(A, B, axis=0, equal_var=False)
+    t_map = np.transpose(np.nan_to_num(t_map), (1, 2, 0))
+    p_map = np.transpose(p_map, (1, 2, 0))
+    return t_map, p_map, fdr_over_edges(p_map)
+
+
+def tfce_permutation_test(A, B, adjacency, args):
+    """TFCE sobre |t| de Welch con permutación de etiquetas de grupo y estadístico máximo (FWER)."""
+    t_abs = np.transpose(compute_welch_t_map(A, B), (1, 2, 0))
+    tfce_real = tfce_transform(t_abs, adjacency, dh=args.dh)
+    
+    D_perm = np.concatenate([A, B], axis=0)
+    timer = time.time()
+    max_tfce_null = np.array(Parallel(n_jobs=args.jobs, backend="loky")(
+        delayed(worker_permutation)(seed, D_perm, len(A), adjacency, args.dh)
+        for seed in range(args.perms)
+    ))
+    print(f"  * {args.perms} permutaciones en {time.time() - timer:.2f} s")
+    
+    p_tfce = (1 + np.sum(max_tfce_null[None, None, None, :] >= tfce_real[..., None], axis=-1)) / (1 + args.perms)
+    p_tfce[np.eye(A.shape[-1], dtype=bool)] = np.nan
+    return p_tfce
 
 
 def report(label, p_map, q_map):
@@ -72,7 +98,7 @@ def run(args):
 
     # --- 1. dDTF por sujeto y condición (un MVAR por registro con todas sus épocas) ---
     print(f"\n--- 1. Cálculo de Conectividad dDTF (p={args.p}) ---")
-    D_list, groups, kid_ids, excluded = [], [], [], []
+    HB_list, SI_list, groups, kid_ids, excluded = [], [], [], [], []
     for kid_id, info in valid_subjects.items():
         res_hb = load_and_compute_ddtf(info['hb'], p=args.p, roi_method=args.roi_method)
         res_si = load_and_compute_ddtf(info['si'], p=args.p, roi_method=args.roi_method)
@@ -83,8 +109,8 @@ def run(args):
             if not args.keep_unstable:
                 continue
 
-        # Contraste intra-sujeto: heartbeat - silencio, promediado por banda
-        D_list.append(band_average(res_hb['ddtf']) - band_average(res_si['ddtf']))
+        HB_list.append(band_average(res_hb['ddtf']))
+        SI_list.append(band_average(res_si['ddtf']))
         groups.append(info['group'])
         kid_ids.append(kid_id)
 
@@ -92,7 +118,10 @@ def run(args):
     for kid_id, roots in excluded:
         print(f"      - {kid_id}: max_root hb={roots[0]:.4f}, si={roots[1]:.4f}")
 
-    D_all = np.array(D_list)                     # (n_subj, n_bands, dest, src)
+    HB_all = np.array(HB_list)                   # (n_subj, n_bands, dest, src)
+    SI_all = np.array(SI_list)
+    D_all = HB_all - SI_all                      # contraste intra-sujeto: heartbeat - silencio
+    M_all = (HB_all + SI_all) / 2                # nivel basal de conectividad (promedio de condiciones)
     groups = np.array(groups)
     D_FT_arr = D_all[groups == 'FT']
     D_PT_arr = D_all[groups == 'PT']
@@ -104,7 +133,7 @@ def run(args):
 
     sfx = f"_{args.roi_method}"
     node_names = list(parameters.ROI_NAMES)
-    np.savez(f"plots/ddtf_contrast{sfx}.npz", D=D_all, groups=groups, kid_ids=np.array(kid_ids),
+    np.savez(f"plots/ddtf_contrast{sfx}.npz", HB=HB_all, SI=SI_all, D=D_all, groups=groups, kid_ids=np.array(kid_ids),
              band_names=np.array(band_names), node_names=np.array(node_names))
     coords_3d, _ = get_roi_3d_centroids(parameters.ELP_FILE, parameters.ROIS)
 
@@ -122,50 +151,61 @@ def run(args):
                            f"Heartbeat - Silencio, todos los sujetos (n={len(D_all)}) [ROI: {args.roi_method.upper()}]",
                            f"plots/contrast_condition{sfx}.png", q_map=q_cond)
 
-    # --- 3. Contraste de grupo FT vs PT sobre (hb - si): Welch + FDR global ---
-    print("\n--- 3. Interacción Grupo x Condición (FT vs PT sobre hb - si, Welch) ---")
-    t_grp, p_grp = ttest_ind(D_FT_arr, D_PT_arr, axis=0, equal_var=False)
-    t_grp = np.transpose(np.nan_to_num(t_grp), (1, 2, 0))
-    p_grp = np.transpose(p_grp, (1, 2, 0))
-    q_grp = fdr_over_edges(p_grp)
-    report("Grupo", p_grp, q_grp)
-    np.save(f"plots/t_values_group{sfx}.npy", t_grp)
-    np.save(f"plots/p_values_group{sfx}_naive.npy", p_grp)
-    np.save(f"plots/p_values_group{sfx}_fdr.npy", q_grp)
-    plot_contrast_heatmaps(t_grp, p_grp, node_names, band_names,
-                           f"FT vs PT sobre (hb - si), FT={len(D_FT_arr)} PT={len(D_PT_arr)} [ROI: {args.roi_method.upper()}]",
-                           f"plots/contrast_group{sfx}.png", q_map=q_grp)
+    # --- 3. Efecto principal de grupo: FT vs PT sobre el promedio (hb + si) / 2 ---
+    print("\n--- 3. Efecto Principal de Grupo (FT vs PT sobre el promedio de condiciones, Welch) ---")
+    t_main, p_main, q_main = group_contrast(M_all[groups == 'FT'], M_all[groups == 'PT'])
+    report("Grupo", p_main, q_main)
+    np.save(f"plots/t_values_group{sfx}.npy", t_main)
+    np.save(f"plots/p_values_group{sfx}_naive.npy", p_main)
+    np.save(f"plots/p_values_group{sfx}_fdr.npy", q_main)
+    plot_contrast_heatmaps(t_main, p_main, node_names, band_names,
+                           f"FT vs PT, promedio de condiciones, FT={len(D_FT_arr)} PT={len(D_PT_arr)} [ROI: {args.roi_method.upper()}]",
+                           f"plots/contrast_group{sfx}.png", q_map=q_main)
     for b_idx, b_name in enumerate(band_names):
-        export_interactive_3d_network(coords_3d, p_grp[:, :, b_idx], node_names,
+        export_interactive_3d_network(coords_3d, p_main[:, :, b_idx], node_names,
                                       filename=f"plots/red_group_naive{sfx}_{b_name}.html",
-                                      title=f"FT vs PT (hb - si), banda {b_name}: p < 0.05 sin corregir")
+                                      title=f"FT vs PT (promedio de condiciones), banda {b_name}: p < 0.05 sin corregir")
+        
+    # Prueba global: dDTF medio sobre las 56 aristas, una prueba por banda (Bonferroni sobre bandas)
+    off_diag = ~np.eye(len(node_names), dtype=bool)
+    global_hb = HB_all[:, :, off_diag].mean(axis=-1)  # (n_subj, n_bands)
+    global_si = SI_all[:, :, off_diag].mean(axis=-1)
+    global_mean = (global_hb + global_si) / 2
+    t_glob, p_glob = ttest_ind(global_mean[groups == 'FT'], global_mean[groups == 'PT'], equal_var=False)
+    for b_idx, b_name in enumerate(band_names):
+        p_bonf = min(1.0, p_glob[b_idx] * len(band_names))
+        print(f"  * Global {b_name}: dDTF medio FT = {global_mean[groups == 'FT', b_idx].mean():.4f}, "
+              f"PT = {global_mean[groups == 'PT', b_idx].mean():.4f} | t = {t_glob[b_idx]:+.2f}, "
+              f"p = {p_glob[b_idx]:.4f}, p_Bonf = {p_bonf:.4f}")
+    plot_group_condition_means(global_hb, global_si, groups, band_names,
+                               f"plots/group_condition_global{sfx}.png",
+                               title=f"dDTF medio (56 aristas) por grupo y condición [ROI: {args.roi_method.upper()}]")
+    
+    # --- 4. Interacción Grupo x Condición: FT vs PT sobre (hb - si) ---
+    print("\n--- 4. Interacción Grupo x Condición (FT vs PT sobre hb - si, Welch) ---")
+    t_int, p_int, q_int = group_contrast(D_FT_arr, D_PT_arr)
+    report("Interacción", p_int, q_int)
+    np.save(f"plots/t_values_interaction{sfx}.npy", t_int)
+    np.save(f"plots/p_values_interaction{sfx}_naive.npy", p_int)
+    np.save(f"plots/p_values_interaction{sfx}_fdr.npy", q_int)
+    plot_contrast_heatmaps(t_int, p_int, node_names, band_names,
+                           f"FT vs PT sobre (hb - si), FT={len(D_FT_arr)} PT={len(D_PT_arr)} [ROI: {args.roi_method.upper()}]",
+                           f"plots/contrast_interaction{sfx}.png", q_map=q_int)
 
-    # --- 4. TFCE (Permutaciones de Monte Carlo, estadístico máximo => FWER) ---
+    # --- 5. TFCE (Permutaciones de Monte Carlo, estadístico máximo => FWER) ---
     if args.tfce:
-        print("\n--- 4. Corrección TFCE (Monte Carlo) ---")
+        print("\n--- 5. Corrección TFCE (Monte Carlo) ---")
         r_val = args.R if args.R is not None else parameters.R_ROI_DEFAULT
         print(f"  * Construyendo grafo espacial con R={r_val} cm")
         adj_spatial = get_spatial_adjacency_matrix(node_names, parameters.ELP_FILE, r_val, rois_dict=parameters.ROIS)
         adjacency = build_edge_band_graph(adj_spatial, n_bands=len(band_names))
-
-        t_abs = np.transpose(compute_welch_t_map(D_FT_arr, D_PT_arr), (1, 2, 0))
-        tfce_real = tfce_transform(t_abs, adjacency, dh=args.dh)
-
-        print(f"  * Iniciando {args.perms} permutaciones en paralelo (Jobs={args.jobs})")
-        D_perm = np.concatenate([D_FT_arr, D_PT_arr], axis=0)
-        timer = time.time()
-        max_tfce_null = np.array(Parallel(n_jobs=args.jobs, backend="loky")(
-            delayed(worker_permutation)(seed, D_perm, len(D_FT_arr), adjacency, args.dh)
-            for seed in range(args.perms)
-        ))
-        print(f"  * Tiempo simulaciones: {time.time() - timer:.2f} s")
-
-        p_tfce = (1 + np.sum(max_tfce_null[None, None, None, :] >= tfce_real[..., None], axis=-1)) / (1 + args.perms)
-        p_tfce[np.eye(len(node_names), dtype=bool)] = np.nan
-        np.save(f"plots/p_values_group{sfx}_tfce.npy", p_tfce)
-        print(f"  * TFCE: {int(np.nansum(p_tfce < 0.05))} aristas con p_FWER < 0.05 | p mínimo = {np.nanmin(p_tfce):.3f}")
-
-    # --- 5. Robustez (si existen ambos análisis mean y pca) ---
+        
+        for label, data in (("group", M_all), ("interaction", D_all)):
+            p_tfce = tfce_permutation_test(data[groups == 'FT'], data[groups == 'PT'], adjacency, args)
+            np.save(f"plots/p_values_{label}{sfx}_tfce.npy", p_tfce)
+            print(f"  * TFCE {label}: {int(np.nansum(p_tfce < 0.05))} aristas con p_FWER < 0.05 | p mínimo = {np.nanmin(p_tfce):.3f}")
+        
+    # --- 6. Robustez (si existen ambos análisis mean y pca) ---
     _, correlations = plot_robustness_comparison(band_names=band_names, output_dir="plots")
     if correlations:
         for b_name, r in correlations.items():

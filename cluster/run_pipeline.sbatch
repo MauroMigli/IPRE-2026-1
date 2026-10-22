@@ -27,4 +27,7 @@ python scripts/power_contrast.py --roi-method mean
 # 5. Informe comparativo de robustez
 python scripts/compare_robustness.py
 
+# 6. Chequeo de conducción de volumen sobre el efecto de grupo
+python scripts/volume_conduction_check.py --roi-method mean
+
 echo "Pipeline finalizado exitosamente."

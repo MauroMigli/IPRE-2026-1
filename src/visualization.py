@@ -196,14 +196,58 @@ def plot_contrast_heatmaps(t_map, p_map, node_names, band_names, title, filename
 
 
 # ==========================================
-# PLOT 4: Comparación de Robustez (Mean vs PCA)
+# PLOT 4: Gráfico de Interacción Grupo x Condición
+# ==========================================
+def plot_group_condition_means(values_hb, values_si, groups, band_names, filename, title):
+    """
+    Gráfico de interacción: media ± error estándar por grupo en cada condición,
+    con las trayectorias individuales (silencio -> heartbeat) de fondo.
+    Líneas paralelas = sin interacción; desplazamiento vertical = efecto de grupo;
+    pendiente = efecto de condición.
+    
+    values_hb, values_si: np.ndarray (n_subj, n_bands)
+    groups: np.ndarray (n_subj,) con etiquetas 'FT' / 'PT'
+    """
+    os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
+    colors = {'FT': '#1f77b4', 'PT': '#d62728'}
+    offsets = {'FT': -0.04, 'PT': 0.04}
+    x = np.array([0, 1])
+    
+    fig, axes = plt.subplots(1, len(band_names), figsize=(5.5 * len(band_names), 5.5), squeeze=False)
+    for b_idx, b_name in enumerate(band_names):
+        ax = axes[0, b_idx]
+        for grp in ('FT', 'PT'):
+            mask = groups == grp
+            pairs = np.column_stack([values_si[mask, b_idx], values_hb[mask, b_idx]])
+            for row in pairs:
+                ax.plot(x + offsets[grp], row, color=colors[grp], alpha=0.12, lw=0.8)
+            mean = pairs.mean(axis=0)
+            sem = pairs.std(axis=0, ddof=1) / np.sqrt(mask.sum())
+            ax.errorbar(x + offsets[grp], mean, yerr=sem, color=colors[grp], marker='o', lw=2.5,
+                        capsize=5, label=f'{grp} (n={mask.sum()})')
+        ax.set_xticks(x)
+        ax.set_xticklabels(['Silencio', 'Heartbeat'])
+        ax.set_xlim(-0.3, 1.3)
+        ax.set_title(f'Banda {b_name}', fontsize=12)
+        ax.set_ylabel('dDTF medio')
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.legend(fontsize=10)
+        
+    fig.suptitle(f'{title}\nMedia ± EE; líneas tenues = sujetos individuales', fontsize=12)
+    plt.tight_layout()
+    plt.savefig(filename, bbox_inches='tight', dpi=200)
+    plt.close()
+
+
+# ==========================================
+# PLOT 5: Comparación de Robustez (Mean vs PCA)
 # ==========================================
 def plot_robustness_comparison(t_file_mean="plots/t_values_group_mean.npy",
                                t_file_pca="plots/t_values_group_pca.npy",
                                band_names=None, output_dir="plots"):
     """
-    Dispersión de los estadísticos t del contraste FT vs PT obtenidos con agregación
-    'mean' contra los obtenidos con 'pca', arista por arista y por banda.
+    Dispersión de los estadísticos t del efecto principal de grupo (FT vs PT) obtenidos
+    con agregación 'mean' contra los obtenidos con 'pca', arista por arista y por banda.
     Retorna la ruta del gráfico y las correlaciones de Pearson por banda.
     """
     if band_names is None:

@@ -2,7 +2,7 @@
 
 ![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
 ![MNE-Python](https://img.shields.io/badge/MNE--Python-Processing-313639.svg)
-![Statsmodels](https://img.shields.io/badge/statsmodels-MVAR%20Fitting-green.svg)
+![SciPy](https://img.shields.io/badge/SciPy-Signal%20%26%20Stats-green.svg)
 ![HPC Ready](https://img.shields.io/badge/HPC-Slurm%20Ready-orange.svg)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
@@ -12,127 +12,117 @@ This repository documents my undergraduate research project **(IPre)** conducted
 
 ```mermaid
 graph TD
-    A[Raw EEG Data .set/.fdt] -->|MNE-Python| B(Preprocessing & Channel Pruning - 46 Channels)
-    B -->|Spatial Pooling / PCA| C[8 Anatomical Super-Nodes / ROIs]
-    C -->|Statsmodels| D[Multivariate Global MVAR Model p]
-    D -->|Fourier Transform| E[direct Directed Transfer Function dDTF]
-    E -->|O1 Caching| F[(Cache Storage _ddtf_rois.npy)]
-    F --> G{Statistical Contrasting FT vs PT}
-    G -->|Naive| H[Welch t-test]
-    G -->|FDR| I[Benjamini-Hochberg Correction]
-    G -->|TFCE + Monte Carlo| J[Topological Cluster Enhancement on ROI Centroids]
-    H & I & J --> K[3D Interactive Networks & Heatmaps]
+    A[Raw EEG .set/.fdt — 500 Hz, épocas contiguas de 3 s] -->|MNE-Python| B(Poda de canales — 46 canales)
+    B -->|Promedio espacial / PCA| C[8 Super-Nodos ROI]
+    C -->|Des-tendencia lineal + remuestreo polifásico| D[ROIs a 20 Hz]
+    D -->|MVAR multi-ensayo, p por BIC| E[Un MVAR por sujeto x condición]
+    E -->|H f y coherencia parcial| F[dDTF 1-8 Hz]
+    F -->|Promedio por banda, hb - si| G[(Contraste por sujeto: 2 bandas x 56 aristas)]
+    G --> H{Estadística}
+    H -->|t pareado, todos los sujetos| I[Efecto de condición]
+    H -->|Welch FT vs PT| J[Interacción grupo x condición]
+    I & J -->|FDR único sobre 112 pruebas / TFCE + permutaciones| K[Heatmaps, redes 3D, robustez Mean vs PCA]
 ```
 
-## Model Order Selection (AIC & BIC)
+## Decisiones metodológicas
 
-Para evitar fijar el orden del rezago $p$ arbitrariamente, dispones de una herramienta reproducible y modularizada en `scripts/` para calcular los criterios de información de Akaike (AIC) y Bayesiano (BIC) sobre las épocas multivariadas de super-nodos:
+Cada decisión responde a una propiedad medida de los datos, no a una preferencia:
 
-```bash
-# Evaluar orden óptimo p en todo el dataset y generar curvas en plots/
-python scripts/find_optimal_p.py --max-p 15 --method mean
-```
+| Propiedad de los datos | Consecuencia | Decisión |
+|---|---|---|
+| Los `.set` traen un pasa-bajos previo en ~12 Hz (−31 dB a 12 Hz, −66 dB a 13 Hz) | Beta (12–30 Hz) y Gamma (30–100 Hz) están en la banda de rechazo; Alpha en la pendiente del filtro | Solo **Delta (1–4 Hz)** y **Theta (4–8 Hz)** |
+| Señal de ~12 Hz de ancho de banda muestreada a 500 Hz | Rezagos casi colineales: 1/3 de los MVAR por época eran inestables (raíz ≈ 1.0009); p = 5 solo cubría 10 ms | Remuestreo a **20 Hz** (Nyquist 10 Hz) |
+| Cualquier tramo de banda de rechazo bajo Nyquist (p.ej. 12–25 Hz a 50 Hz) | Señal casi perfectamente predecible: a 50 Hz ningún MVAR con p ≥ 6 fue estable y el BIC decrecía sin mínimo | 20 Hz: 100 % de modelos estables, BIC con mínimo claro |
+| Sin pasa-altos (gran potencia DC / deriva) | No estacionariedad dentro de la época | Des-tendencia lineal por época |
+| Épocas = segmentos contiguos de 3 s (evento `sg`), no bloqueados a estímulo | El índice de época no significa lo mismo entre sujetos; testear por época multiplicaba ×12 las pruebas y descartaba ~2/3 de los datos (se usaban 12 de ~37 épocas) | **Un MVAR multi-ensayo por sujeto y condición** con todas las épocas (los rezagos no cruzan bordes de época) |
 
-Esto generará `plots/mvar_order_selection_curves.png` (curvas de AIC/BIC y distribución de votos por época) y el archivo de métricas estructurado `plots/mvar_order_selection.json`.
+### Conectividad
 
-## Temporal 3D Network Visualization
+* **MVAR multi-ensayo** (`src/connectivity.py`): mínimos cuadrados sobre las épocas apiladas, con intercepto. ~37 épocas × 57 muestras ≈ 2.100 observaciones para 8 × (8·3 + 1) = 200 parámetros.
+* **dDTF** (Korzeniewska et al., 2003) = DTF normalizado por fila × **coherencia parcial**, esta última obtenida de la matriz espectral inversa $G = S^{-1}$. En una cadena simulada 0 → 1 → 2 recupera los vínculos directos (≈ 0.34) y suprime el indirecto 0 → 2 (≈ 0.02) (`tests/`).
+* **Orden** $p$: AIC/BIC del MVAR multi-ensayo, todos los órdenes estimados sobre la misma muestra. BIC elige **p = 3** (150 ms de memoria) en el promedio de los 160 registros.
 
-Para inspeccionar la dinámica temporal y reproducir animaciones interactivas en 3D con barra deslizante de épocas:
+### Estadística
 
-```bash
-# Generar visualización 3D interactiva para Gamma y Delta (guardadas en plots/)
-python scripts/plot_temporal_network.py --band Gamma --roi-method mean
-python scripts/plot_temporal_network.py --band Delta --roi-method mean
-```
+Por sujeto se calcula $D = \text{dDTF}_{hb} - \text{dDTF}_{si}$ promediado por banda → 2 bandas × 56 aristas dirigidas = **112 pruebas** (antes 3.360).
 
-## Methodological Robustness Analysis (Mean vs. PCA)
+1. **Efecto de condición** (chequeo de cordura): t pareado de $D$ sobre todos los sujetos.
+2. **Interacción grupo × condición**: Welch FT vs PT sobre $D$.
+3. **FDR (Benjamini-Hochberg) en una sola familia** con las 112 pruebas. Opcional: **TFCE** sobre el grafo (destino, origen, banda) con permutaciones de etiquetas de grupo y estadístico máximo (FWER).
+4. **Robustez**: correlación de los mapas t con agregación `mean` vs `pca`.
+5. **Potencia espectral** (`scripts/power_contrast.py`): los mismos contrastes sobre log-potencia por ROI, para saber si el estímulo produce algún efecto en el EEG.
 
-Para validar que los descubrimientos neurobiológicos (pico temprano en Gamma época 1 y Delta época 2) son invariantes al método de reducción intra-ROI, puedes contrastar el **Promedio Espacial (`mean`)** contra el **Primer Componente Principal (`pca`)**:
+## Resultados (80 sujetos: 53 FT, 27 PT)
 
-```bash
-# 1. Evaluar orden MVAR para ambos métodos
-python scripts/find_optimal_p.py --method mean
-python scripts/find_optimal_p.py --method pca
+| Análisis | p < 0.05 sin corregir | Esperado por azar | Sobreviven corrección |
+|---|---|---|---|
+| dDTF, efecto de condición (Mean) | 9 / 112 | 5.6 | 0 (q mín = 0.39) |
+| dDTF, FT vs PT (Mean) | 7 / 112 | 5.6 | 0 (q mín = 0.21; TFCE p mín = 0.09) |
+| dDTF, efecto de condición (PCA) | 8 / 112 | 5.6 | 0 (q mín = 0.61) |
+| dDTF, FT vs PT (PCA) | 8 / 112 | 5.6 | 0 (q mín = 0.46) |
+| **Potencia Delta, efecto de condición** | **8 / 8 ROIs** | 0.4 | **8 (q ≤ 0.008), hb > si** |
+| Potencia Delta, FT vs PT | 3 / 8 ROIs | 0.4 | 0 (q mín = 0.088; tendencia PT > FT en frontal/central) |
+| Potencia Theta (condición y grupo) | 0 / 8 | 0.4 | 0 |
 
-# 2. Correr el pipeline con promedio espacial y con PCA (los archivos se guardan con sufijo _mean y _pca)
-python run_pipeline.py --roi-method mean
-python run_pipeline.py --roi-method pca
+**Lectura:** el estímulo *heartbeat* aumenta robustamente la potencia Delta en todo el cuero cabelludo, pero no produce cambios detectables en la conectividad dirigida (dDTF) entre ROIs, ni en general ni de forma distinta entre FT y PT. El resultado nulo de conectividad **no** se explica por datos vacíos ni por una corrección demasiado estricta: el conteo sin corregir es indistinguible del azar. Robustez Mean vs PCA de los mapas t: r = 0.73 (Delta), 0.66 (Theta).
 
-# 3. Generar el informe y gráfico comparativo de robustez
-python scripts/compare_robustness.py
-```
+> Los resultados anteriores (500 Hz, 5 bandas, 12 épocas, incluido el "pico Gamma en la época 1") están en `archive/legacy_plots/rois_500hz_epochwise/` y no son interpretables: Gamma no contiene señal EEG en estos archivos.
 
 ## How to Run
 
-El pipeline está completamente automatizado y preparado para entornos locales y HPC / Slurm. La ejecución se gestiona mediante el orquestador `run_pipeline.py`.
-
-### Basic Execution
-Ejecutar el contraste estadístico estándar (Naive y FDR) sobre los 8 super-nodos (ROIs):
 ```bash
-python run_pipeline.py
+# 1. Selección del orden MVAR (AIC/BIC) -> plots/mvar_order_selection_*.{json,png}
+python scripts/find_optimal_p.py --method mean
+
+# 2. Pipeline principal (Mean) con TFCE, y robustez con PCA
+python run_pipeline.py --roi-method mean --tfce --perms 2000
+python run_pipeline.py --roi-method pca
+
+# 3. Chequeo de cordura con potencia espectral, e informe de robustez
+python scripts/power_contrast.py
+python scripts/compare_robustness.py
+
+# Tests (simulaciones con conectividad conocida)
+python -m unittest discover tests
 ```
 
-### Command-Line Arguments (`argparse`)
-Puedes personalizar la ejecución con las siguientes banderas:
+En HPC / Slurm, desde la raíz del repositorio: `sbatch cluster/run_pipeline.sbatch`.
 
-* `--use-rois`: Opera sobre los 8 super-nodos ROIs anatómicamente definidos. *(Habilitado por defecto)*
-* `--no-rois`: Desactiva el modo ROIs y ejecuta el análisis canal a canal bivariado legado.
-* `--roi-method`: Método de agregación de canales dentro de cada ROI: `mean` (promedio espacial) o `pca` (primer componente principal). *(Default: `mean`)*
-* `--select-order`: Ejecuta la búsqueda empírica de orden MVAR vía AIC/BIC antes de iniciar el cálculo de conectividad.
-* `--method`: Método estadístico a correr: `fdr` (Naive + FDR, rápido y estándar), `tfce`, o `all`. *(Default: `fdr`)*
-* `--p`: Orden del modelo MVAR. *(Default: el fijado en `parameters.P_OPTIMO = 5`)*
-* `--R`: Radio espacial (en cm) para adyacencia espacial en TFCE. *(Default: automático, 9.5 cm para ROIs)*
-* `--dh`: Paso discreto para la integral de Riemann en TFCE. *(Default: `0.1`)*
-* `--perms`: Número de permutaciones Monte Carlo para TFCE. *(Default: `1000`)*
-* `--jobs`: Número de cores CPU para paralelización (-1 = todos). *(Default: `-1`)*
+### Command-Line Arguments (`run_pipeline.py`)
 
-**Ejemplo HPC run:**
-```bash
-python run_pipeline.py --method all --use-rois --perms 5000 --jobs 16
-```
+* `--roi-method`: agregación intra-ROI, `mean` o `pca`. *(Default: `mean`)*
+* `--p`: orden del MVAR. *(Default: `parameters.P_OPTIMO = 3`)*
+* `--select-order`: re-estima $p$ vía AIC/BIC antes de correr.
+* `--keep-unstable`: no excluir sujetos con MVAR inestable (por defecto se excluyen; con la configuración actual son 0).
+* `--tfce`: corre además TFCE con permutaciones. `--perms`, `--jobs`, `--dh`, `--R` (radio en cm entre centroides de ROIs, default 9.5) lo configuran.
 
-## Adding New Data & Configuration
+## Configuración
 
-All global settings and data paths are centralized in the `parameters.py` file. To add new data:
-
-1. **Place your `.set` and `.fdt` files** inside the data directories (`data/epch_heartbeat/` and `data/epch_silence/`).
-2. **Update `parameters.py`** if your directory names differ:
-   ```python
-   HB_DIR = Path("data/your_new_hb_folder")
-   SI_DIR = Path("data/your_new_si_folder")
-   ```
-3. Ensure the spatial coordinates file (`data/eeglab_65chanlocs.elp`) is present, as it is strictly required to calculate spatial distances for the 3D plots and TFCE clustering.
-4. Customize dropped channels or frequency bands (`F_BANDS`) directly in `parameters.py` as needed.
+Todo está centralizado en `parameters.py`: rutas de datos, canales descartados, `FS_TARGET`, `DETREND`, `F_BANDS`, `P_OPTIMO` y las ROIs. Si se reciben datos con otro preprocesamiento (en particular, otro pasa-bajos), hay que revisar `FS_TARGET` y `F_BANDS`: la frecuencia de remuestreo debe dejar Nyquist cerca del borde del filtro.
 
 ## Output Structure
-All generated outputs are automatically saved in the `plots/` directory:
-- **`p_values_rois_*.npy`**: Raw matrices of statistical p-values ($5 \times 12 \times 8 \times 8$).
-- **`red_temporal_*.html`**: Interactive 3D scalp plots of significant connections over time (with play/pause animation and epoch slider).
-- **`edge_counts_*.png`**: Temporal profile of significant edge counts across epochs per frequency band.
-- **`archive/`**: Contains legacy 46-channel bivariate outputs and exploratory plots (`archive/legacy_plots/`) and legacy unit tests (`archive/legacy_tests/`).
+
+Todo en `plots/` (sufijo `_mean` / `_pca`):
+- **`ddtf_contrast_*.npz`**: contraste por sujeto $D$ (n_sujetos × bandas × destino × origen), grupos e IDs.
+- **`t_values_{condition,group}_*.npy`**, **`p_values_{condition,group}_*_{naive,fdr,tfce}.npy`**: mapas (destino, origen, banda).
+- **`contrast_{condition,group}_*.png`**: heatmaps de t con marcas de significancia.
+- **`red_group_naive_*_{Delta,Theta}.html`**: redes 3D interactivas (p < 0.05 sin corregir, exploratorio).
+- **`mvar_order_selection_*`**, **`robustness_comparison_mean_vs_pca.png`**, **`power_contrast_*.npz`**.
+- **`archive/`**: formulaciones anteriores (canal a canal bivariado; ROIs a 500 Hz por época) y sus resultados.
 
 ## Figures
-<br>
+
 <div align="center">
-  <img src="plots/edge_counts_Gamma.png" alt="Temporal Evolution of Connectivity - Gamma Band" width="75%" />
-  <p>
-    <br>
-    <em><b>Figure 1:</b> Temporal profile of significant directed edges in the <b>Gamma band</b> across the 12 experimental epochs under FDR and Naive thresholds. A marked burst in functional connectivity is observed in Early Evoked Epoch 1 (19 surviving connections under uncorrected contrast, 1 surviving under strict FDR), returning to basal levels in subsequent epochs.</em>
-  </p>
+  <img src="plots/contrast_group_mean.png" alt="FT vs PT contrast" width="90%" />
+  <p><em><b>Figure 1:</b> Contraste FT vs PT sobre (heartbeat − silencio) del dDTF, bandas Delta y Theta. Ninguna arista sobrevive FDR; el número de aristas con p &lt; 0.05 sin corregir (7/112) es el esperado por azar.</em></p>
 </div>
 <br>
 <div align="center">
-  <img src="plots/mvar_order_selection_curves.png" alt="MVAR Order Selection AIC/BIC Curves" width="75%" />
-  <p>
-    <br>
-    <em><b>Figure 2:</b> Empirical MVAR model order selection across subjects and epochs using Akaike (AIC) and Bayesian (BIC) information criteria over the 8 ROIs, justifying the selection of $p=5$.</em>
-  </p>
+  <img src="plots/mvar_order_selection_curves_mean.png" alt="MVAR Order Selection AIC/BIC Curves" width="85%" />
+  <p><em><b>Figure 2:</b> Selección de orden del MVAR multi-ensayo a 20 Hz sobre los 160 registros. BIC alcanza su mínimo en p = 3.</em></p>
 </div>
 <br>
 <div align="center">
-  <img src="data/mapaElectrodes.jpg" alt="Map of electrodes" width="75%" />
-  <p>
-    <br>
-    <em><b>Figure 2:</b> Map of channels. </em>
-  </p>
+  <img src="data/mapaElectrodes.jpg" alt="Map of electrodes" width="60%" />
+  <p><em><b>Figure 3:</b> Map of channels.</em></p>
 </div>

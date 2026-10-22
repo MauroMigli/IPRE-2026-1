@@ -20,9 +20,9 @@ venv.bak/
 *.fdt
 data/F06_hb_sg/
 data/F06_sisg/
-data/epch_heartbeat/
+data/epch_heartbeat
 data/epch_ne/
-data/epch_silence/
+data/epch_silence
 data/ddtf_cache/
 
 # IDEs and OS files
@@ -33,3 +33,7 @@ data/ddtf_cache/
 # Ignore all generated plots locally, but keeping plots/ directory open
 # Just in case you don't want local plots tracked, but currently plots are being pushed.
 # So I will leave plots alone, except the cache.
+
+# Per-subject derived data (subject IDs + individual contrasts): keep local, repo is public
+plots/ddtf_contrast_*.npz
+plots/power_contrast_*.npz

@@ -4,30 +4,27 @@
 #SBATCH --error=eeg_pipeline_%j.err
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=32G
-#SBATCH --time=24:00:00
+#SBATCH --mem=16G
+#SBATCH --time=02:00:00
 #SBATCH --partition=general
 
-# Activar entorno virtual
-source ../.venv/bin/activate
+# Enviar desde la raíz del repositorio: sbatch cluster/run_pipeline.sbatch
+cd "$SLURM_SUBMIT_DIR"
+source .venv/bin/activate
 
-# 1. (Opcional) Búsqueda previa del orden óptimo MVAR (AIC / BIC) para ambos métodos
-# python ../scripts/find_optimal_p.py --max-p 15 --method mean
-# python ../scripts/find_optimal_p.py --max-p 15 --method pca
+# 1. Selección del orden MVAR (AIC / BIC) sobre el MVAR multi-ensayo remuestreado
+python scripts/find_optimal_p.py --method mean
 
-# 2. Ejecutar análisis principal con Promedio Espacial (Mean)
-echo "Ejecutando pipeline con Promedio Espacial (Mean)..."
-python ../run_pipeline.py --method fdr --use-rois --roi-method mean
+# 2. Análisis principal con Promedio Espacial (Mean) + TFCE
+python run_pipeline.py --roi-method mean --tfce --perms 5000 --jobs 16
 
-# 3. Ejecutar análisis de robustez con PCA (1er Componente Principal)
-echo "Ejecutando pipeline de robustez con PCA (PC1)..."
-python ../run_pipeline.py --method fdr --use-rois --roi-method pca
+# 3. Análisis de robustez con PCA (1er Componente Principal)
+python run_pipeline.py --roi-method pca
 
-# 4. Generar visualizaciones interactivas 3D temporales (Delta y Gamma)
-python ../scripts/plot_temporal_network.py --band both --roi-method mean
-python ../scripts/plot_temporal_network.py --band both --roi-method pca
+# 4. Chequeo de cordura: efecto del estímulo sobre la potencia espectral
+python scripts/power_contrast.py --roi-method mean
 
-# 5. Generar informe comparativo de robustez cuantitativo
-python ../scripts/compare_robustness.py
+# 5. Informe comparativo de robustez
+python scripts/compare_robustness.py
 
-echo "Pipeline de robustez finalizado exitosamente."
+echo "Pipeline finalizado exitosamente."

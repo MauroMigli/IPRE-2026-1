@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 find_optimal_p.py - Búsqueda formal y reproducible del orden óptimo de MVAR (p)
-usando Criterios de Información de Akaike (AIC) y Bayesiano (BIC) sobre Super-Nodos (ROIs).
+usando Criterios de Información de Akaike (AIC) y Bayesiano (BIC) sobre Super-Nodos (ROIs),
+con un MVAR multi-ensayo por registro sobre señales remuestreadas a parameters.FS_TARGET.
 """
 
 import argparse
@@ -17,57 +18,40 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import parameters
 from src.preprocessing import get_valid_subjects
-from src.model_order import find_dataset_optimal_order, evaluate_epoch_orders
+from src.model_order import find_dataset_optimal_order, evaluate_orders
 from src.visualization import plot_order_selection_curves
 
-def run_synthetic_benchmark(max_p=15, n_epochs=20, n_times=250, n_rois=8, method="mean"):
+def run_synthetic_benchmark(max_p=15, n_epochs=30, n_times=150, n_rois=8, method="mean"):
     """
-    Ejecuta una evaluación simulada con señales multivariadas de prueba
-    para verificar la estabilidad del módulo cuando no hay datos crudos locales.
+    Ejecuta una evaluación simulada con un MVAR multi-ensayo de orden conocido
+    para verificar el módulo cuando no hay datos crudos locales.
     """
     print(f"\n[BENCHMARK SINTÉTICO] Generando {n_epochs} épocas de prueba ({n_rois} ROIs, {n_times} muestras, método: {method})...")
-    np.random.seed(42 if method == "mean" else 100)
-    # Generar proceso autorregresivo multivariado sintético con p_true = 5
+    rng = np.random.default_rng(42 if method == "mean" else 100)
     p_true = 5
-    lags = np.arange(1, max_p + 1)
     
-    all_aic = []
-    all_bic = []
-    
-    for _ in range(n_epochs):
-        noise = np.random.randn(n_times, n_rois)
-        signal = np.zeros_like(noise)
+    signal = np.zeros((n_epochs, n_rois, n_times))
+    for ep in range(n_epochs):
+        noise = rng.standard_normal((n_rois, n_times))
         for t in range(p_true, n_times):
-            ar_term = 0.3 * signal[t-1] - 0.2 * signal[t-p_true]
-            signal[t] = ar_term + noise[t]
+            signal[ep, :, t] = 0.3 * signal[ep, :, t-1] - 0.2 * signal[ep, :, t-p_true] + noise[:, t]
             
-        res = evaluate_epoch_orders(signal, max_p=max_p)
-        all_aic.append(res['aic'])
-        all_bic.append(res['bic'])
-        
-    all_aic = np.vstack(all_aic)
-    all_bic = np.vstack(all_bic)
-    
-    mean_aic = np.nanmean(all_aic, axis=0)
-    mean_bic = np.nanmean(all_bic, axis=0)
-    aic_votes = lags[np.nanargmin(all_aic, axis=1)]
-    bic_votes = lags[np.nanargmin(all_bic, axis=1)]
-    
+    res = evaluate_orders(signal, max_p=max_p)
+    lags = res['lags']
     plot_order_selection_curves(
-        lags, mean_aic, mean_bic, aic_votes, bic_votes, 
+        lags, res['aic'], res['bic'], [lags[np.argmin(res['aic'])]], [lags[np.argmin(res['bic'])]],
         output_dir="plots", 
-        suffix=f"_{method}",
-        method_label=f"ROI: {method.upper()}"
+        suffix=f"_{method}_synthetic",
+        method_label=f"Sintético: {method.upper()}"
     )
-    opt_p = lags[np.nanargmin(mean_bic)]
-    print(f"[BENCHMARK SINTÉTICO] Orden óptimo detectado por BIC: p = {opt_p} (Esperado cercano a {p_true})")
-    print(f"Gráfico generado en: plots/mvar_order_selection_curves_{method}.png")
+    opt_p = lags[np.argmin(res['bic'])]
+    print(f"[BENCHMARK SINTÉTICO] Orden óptimo detectado por BIC: p = {opt_p} (Esperado {p_true})")
 
 def main():
     parser = argparse.ArgumentParser(
         description="Búsqueda reproducible del orden MVAR óptimo (p) vía AIC/BIC sobre Super-Nodos (ROIs)"
     )
-    parser.add_argument("--max-p", type=int, default=15, help="Rezago máximo a evaluar (default: 15)")
+    parser.add_argument("--max-p", type=int, default=parameters.MAX_P, help="Rezago máximo a evaluar (default: parameters.MAX_P)")
     parser.add_argument("--method", type=str, choices=['mean', 'pca'], default='mean', 
                         help="Método de agregación de canales a ROI: 'mean' o 'pca' (default: 'mean')")
     parser.add_argument("--output-dir", type=str, default="plots", help="Directorio para guardar gráficos y JSON")

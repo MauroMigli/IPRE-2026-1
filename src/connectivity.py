@@ -1,242 +1,146 @@
 import numpy as np
-
-try:
-    from statsmodels.tsa.api import VAR
-except ImportError:
-    VAR = None
-
-try:
-    import mne
-except ImportError:
-    mne = None
-
-import time
 import os
 from pathlib import Path
 
-import parameters 
-from src.preprocessing import clean_epochs
+import parameters
+from src.preprocessing import load_roi_epochs
 
-def aggregate_channels_to_rois(data, ch_names, rois_dict=None, method="mean"):
+
+def build_lagged_design(roi_epochs, p, p_start=None):
     """
-    Colapsa las señales multicanal a super-nodos (ROIs) anatómicamente definidos.
-    
+    Construye las matrices de regresión de un MVAR(p) multi-ensayo (con intercepto).
+    Los rezagos nunca cruzan el borde entre épocas: cada época aporta las muestras
+    t = p_start, ..., n_times - 1, regresadas sobre sus propios p valores previos.
+
     Parámetros:
     -----------
-    data: np.ndarray de forma (n_channels, n_times) o (n_epochs, n_channels, n_times)
-    ch_names: lista con los nombres de los canales en 'data'
-    rois_dict: dict de ROIs {nombre_roi: [canales]} (por defecto parameters.ROIS)
-    method: 'mean' (promedio espacial) o 'pca' (primer componente principal espacial)
-    
+    roi_epochs: np.ndarray (n_epochs, n_rois, n_times)
+    p: orden del modelo
+    p_start: primera muestra usada como respuesta en cada época (default: p).
+             Fijarlo en max_p permite comparar AIC/BIC entre órdenes sobre la misma muestra.
+
     Retorna:
     --------
-    roi_data: np.ndarray de forma (n_rois, n_times) o (n_epochs, n_rois, n_times)
+    Y: (n_obs, n_rois), X: (n_obs, 1 + n_rois * p)
     """
-    if rois_dict is None:
-        rois_dict = parameters.ROIS
+    p_start = p if p_start is None else p_start
+    n_epochs, n_rois, n_times = roi_epochs.shape
+    n_per_epoch = n_times - p_start
 
-    is_3d = (data.ndim == 3)
-    if not is_3d:
-        data = data[np.newaxis, ...]  # (1, n_channels, n_times)
+    Y = np.empty((n_epochs * n_per_epoch, n_rois))
+    X = np.ones((n_epochs * n_per_epoch, 1 + n_rois * p))
 
-    n_epochs, n_channels, n_times = data.shape
-    ch_to_idx = {name: idx for idx, name in enumerate(ch_names)}
-    
-    roi_names = list(rois_dict.keys())
-    n_rois = len(roi_names)
-    roi_data = np.zeros((n_epochs, n_rois, n_times), dtype=data.dtype)
+    for ep in range(n_epochs):
+        rows = slice(ep * n_per_epoch, (ep + 1) * n_per_epoch)
+        x = roi_epochs[ep]
+        Y[rows] = x[:, p_start:].T
+        for lag in range(1, p + 1):
+            X[rows, 1 + (lag - 1) * n_rois: 1 + lag * n_rois] = x[:, p_start - lag: n_times - lag].T
 
-    for r_idx, roi_name in enumerate(roi_names):
-        member_channels = rois_dict[roi_name]
-        valid_indices = [ch_to_idx[ch] for ch in member_channels if ch in ch_to_idx]
-
-        if not valid_indices:
-            continue
-
-        if method == "pca" and len(valid_indices) > 1:
-            for ep in range(n_epochs):
-                cluster_signals = data[ep, valid_indices, :]  # (m, n_times)
-                centered = cluster_signals - np.mean(cluster_signals, axis=1, keepdims=True)
-                try:
-                    u, s, vh = np.linalg.svd(centered, full_matrices=False)
-                    comp = vh[0] * s[0]
-                    mean_sig = np.mean(centered, axis=0)
-                    if np.corrcoef(comp, mean_sig)[0, 1] < 0:
-                        comp = -comp
-                    roi_data[ep, r_idx, :] = comp
-                except np.linalg.LinAlgError:
-                    roi_data[ep, r_idx, :] = np.mean(cluster_signals, axis=0)
-        else:
-            roi_data[:, r_idx, :] = np.mean(data[:, valid_indices, :], axis=1)
-
-    return roi_data if is_3d else roi_data[0]
+    return Y, X
 
 
-def process_dDTF_multivariate_rois(roi_data_epochs, sampling_freq: float, p: int):
+def fit_mvar_multitrial(roi_epochs, p, p_start=None):
     """
-    Calcula la función de transferencia dirigida directa (dDTF) multivariada
-    ajustando un modelo MVAR global sobre todos los super-nodos (ROIs).
-    
+    Ajusta por mínimos cuadrados un único MVAR(p) a todas las épocas de un registro:
+        x_t = c + sum_{l=1..p} A_l x_{t-l} + e_t,   Cov(e_t) = V
+
+    Retorna:
+    --------
+    dict con
+        A: (p, n_rois, n_rois) coeficientes, A[l-1][dest, src]
+        V: (n_rois, n_rois) covarianza residual (corregida por grados de libertad)
+        sigma_ml: (n_rois, n_rois) covarianza residual de máxima verosimilitud
+        n_obs: número de muestras usadas como respuesta
+        max_root: módulo de la mayor raíz de la matriz compañera (< 1 => estable)
+    """
+    Y, X = build_lagged_design(roi_epochs, p, p_start)
+    n_obs, n_rois = Y.shape
+
+    B, *_ = np.linalg.lstsq(X, Y, rcond=None)  # (1 + n_rois*p, n_rois)
+    resid = Y - X @ B
+    sigma_ml = resid.T @ resid / n_obs
+    V = resid.T @ resid / (n_obs - X.shape[1])
+
+    A = np.stack([B[1 + l * n_rois: 1 + (l + 1) * n_rois].T for l in range(p)])
+
+    companion = np.zeros((n_rois * p, n_rois * p))
+    companion[:n_rois] = np.hstack(list(A))
+    companion[n_rois:, :-n_rois] = np.eye(n_rois * (p - 1))
+    max_root = np.max(np.abs(np.linalg.eigvals(companion)))
+
+    return {'A': A, 'V': V, 'sigma_ml': sigma_ml, 'n_obs': n_obs, 'max_root': max_root}
+
+
+def ddtf_from_mvar(A, V, sampling_freq, freqs=None):
+    """
+    dDTF (Korzeniewska et al., 2003) = DTF normalizado * coherencia parcial.
+
     Parámetros:
     -----------
-    roi_data_epochs: np.ndarray (n_epochs, n_rois, n_times)
-    sampling_freq: frecuencia de muestreo en Hz
-    p: orden del modelo MVAR (rezago)
-    
+    A: (p, n_rois, n_rois) coeficientes MVAR
+    V: (n_rois, n_rois) covarianza residual
+    sampling_freq: frecuencia de muestreo del MVAR (Hz)
+    freqs: frecuencias a evaluar (default parameters.FS_GLOBAL)
+
     Retorna:
     --------
-    dDTF: np.ndarray (n_epochs, n_fs, n_rois, n_rois)
+    dDTF: np.ndarray (n_fs, n_rois, n_rois), dDTF[f, dest, src], diagonal en cero
     """
-    if VAR is None:
-        raise ImportError(
-            "statsmodels no está disponible en este entorno de Python.\n"
-            "Por favor, activa el entorno virtual (ej: source ../.venv/bin/activate) "
-            "o instala statsmodels con: pip install statsmodels"
-        )
-
-    n_epochs, n_rois, n_times = roi_data_epochs.shape
-    dt = 1.0 / sampling_freq
-    n_fs = len(parameters.FS_GLOBAL)
-    
-    dDTF = np.zeros((n_epochs, n_fs, n_rois, n_rois))
+    if freqs is None:
+        freqs = parameters.FS_GLOBAL
+    p, n_rois, _ = A.shape
     eps = np.finfo(float).eps
-    
-    k_lags = np.arange(1, p + 1)
-    exp_matrix = np.exp(-2j * np.pi * np.outer(parameters.FS_GLOBAL, k_lags) * dt)
-    
-    timer = time.time()
-    for epoch in range(n_epochs):
-        if epoch % 10 == 0:
-            print(f"  -> Procesando MVAR Multivariado ROI Epoch {epoch + 1}/{n_epochs}... ({time.time() - timer:.2f} seg)", flush=True)
-            
-        data_ep = roi_data_epochs[epoch].T  # (n_times, n_rois)
-        try:
-            model = VAR(data_ep)
-            fitted = model.fit(maxlags=p)
-            A = fitted.coefs  # (p, n_rois, n_rois)
-            V = fitted.sigma_u  # (n_rois, n_rois)
-        except Exception:
-            continue
-            
-        A_f_all = np.eye(n_rois, dtype=complex) - np.einsum('f p, p i j -> f i j', exp_matrix, A)
-        
-        for f_idx in range(n_fs):
-            try:
-                H_f = np.linalg.inv(A_f_all[f_idx])
-            except np.linalg.LinAlgError:
-                continue
-                
-            S_f = H_f.conj() @ V @ H_f.T
-            row_sums = np.sum(np.abs(H_f)**2, axis=1)
-            
-            for dest in range(n_rois):
-                for src in range(n_rois):
-                    if dest == src:
-                        continue
-                        
-                    den_DTF = np.sqrt(row_sums[dest])
-                    DTF = np.abs(H_f[dest, src]) / (den_DTF + eps)
-                    
-                    den_PC = np.sqrt(np.abs(S_f[dest, dest]) * np.abs(S_f[src, src]))
-                    PC = np.abs(S_f[dest, src]) / (den_PC + eps)
-                    
-                    if not (np.isnan(DTF) or np.isnan(PC)):
-                        dDTF[epoch, f_idx, dest, src] = DTF * PC
-                        
-    return dDTF
+
+    lags = np.arange(1, p + 1)
+    exp_matrix = np.exp(-2j * np.pi * np.outer(freqs, lags) / sampling_freq)  # (n_fs, p)
+    A_f = np.eye(n_rois) - np.einsum('fp,pij->fij', exp_matrix, A)
+    H = np.linalg.inv(A_f)                                # (n_fs, n_rois, n_rois)
+    S = H @ V @ np.conj(np.transpose(H, (0, 2, 1)))       # matriz espectral
+
+    # DTF normalizado por fila: |H_ij|^2 / sum_m |H_im|^2
+    H2 = np.abs(H) ** 2
+    DTF = np.sqrt(H2 / (H2.sum(axis=2, keepdims=True) + eps))
+
+    # Coherencia parcial: se obtiene de la matriz espectral inversa G = S^-1
+    G = np.linalg.inv(S)
+    G_diag = np.abs(np.diagonal(G, axis1=1, axis2=2))      # (n_fs, n_rois)
+    PC = np.abs(G) / (np.sqrt(G_diag[:, :, None] * G_diag[:, None, :]) + eps)
+
+    dDTF = DTF * PC
+    dDTF[:, np.arange(n_rois), np.arange(n_rois)] = 0.0
+    return np.nan_to_num(dDTF)
 
 
-def process_dDTF_global(data_epochs, sampling_freq: float, p: int):
+def load_and_compute_ddtf(filepath, p, roi_method=None):
     """
-    Calcula el dDTF en BANDA ANCHA canal a canal (bivariado) con protección de estabilidad numérica (Epsilon).
-    """
-    n_epochs, n_channels, _ = data_epochs.shape
-    dt = 1.0 / sampling_freq
-    
-    n_fs = len(parameters.FS_GLOBAL)
-    
-    dDTF_global = np.zeros((n_epochs, n_fs, n_channels, n_channels))
-    eps = np.finfo(float).eps # Protección contra divisiones por cero
+    Carga un registro (.set), ajusta un MVAR multi-ensayo sobre sus ROIs remuestreadas
+    y calcula el dDTF. Resultado cacheado en data/ddtf_cache.
 
-    timer = time.time()
-    for epoch in range(n_epochs):
-        if epoch % 10 == 0:
-            print(f"  -> Procesando Epoch {epoch + 1}/{n_epochs}... ({time.time() - timer:.2f} seg)", flush=True)
-        
-        data_ep = data_epochs[epoch] 
-
-        for i in range(n_channels):
-            for j in range(i + 1, n_channels):
-                pair_data = np.vstack((data_ep[i], data_ep[j])).T
-                model = VAR(pair_data)
-                
-                try:
-                    fitted = model.fit(maxlags=p)
-                    A_pair = fitted.coefs
-                    V_pair = fitted.sigma_u
-                except Exception:
-                    continue
-                
-                k_lags = np.arange(1, p + 1)
-                exp_matrix = np.exp(-2j * np.pi * np.outer(parameters.FS_GLOBAL, k_lags) * dt)
-                A_f_all = np.eye(2, dtype=complex) - np.einsum('f p, p i j -> f i j', exp_matrix, A_pair)
-                
-                for f_idx in range(n_fs):
-                    try:
-                        H_f = np.linalg.inv(A_f_all[f_idx])
-                    except np.linalg.LinAlgError:
-                        continue 
-                        
-                    S_f = H_f.conj() @ V_pair @ H_f.T
-                    row_sums = np.sum(np.abs(H_f)**2, axis=1)
-                    
-                    for row, col, dest, src in [(0, 1, i, j), (1, 0, j, i)]:
-                        den_DTF = np.sqrt(row_sums[row])
-                        DTF = np.abs(H_f[row, col]) / (den_DTF + eps)
-                        
-                        den_PC = np.sqrt(np.abs(S_f[row, row]) * np.abs(S_f[col, col]))
-                        PC = np.abs(S_f[row, col]) / (den_PC + eps)
-                        
-                        if np.isnan(DTF) or np.isnan(PC):
-                            dDTF_global[epoch, f_idx, dest, src] = 0.0
-                        else:
-                            dDTF_global[epoch, f_idx, dest, src] = DTF * PC
-
-    return dDTF_global
-
-
-def load_and_compute_ddtf(filepath, p=7, sampling_freq=500.0, use_rois=True, roi_method=None):
-    """
-    Carga los datos limpios y calcula dDTF con un sistema de caché.
-    Soporta modo ROIs super-nodos (por defecto) o cálculo canal a canal.
+    Retorna:
+    --------
+    dict con ddtf (n_fs, n_rois, n_rois), max_root, n_obs, n_epochs
     """
     if roi_method is None:
-        roi_method = getattr(parameters, 'ROI_EXTRACTION_METHOD', 'mean')
-        
+        roi_method = parameters.ROI_EXTRACTION_METHOD
+
     stem = Path(filepath).stem
     cache_dir = "data/ddtf_cache"
     os.makedirs(cache_dir, exist_ok=True)
-    
-    suffix = f"_p{p}_rois_{roi_method}" if use_rois else f"_p{p}_channels"
-    cache_ddtf = f"{cache_dir}/{stem}{suffix}_ddtf.npy"
-    cache_labels = f"{cache_dir}/{stem}{suffix}_labels.npy"
-    
-    if os.path.exists(cache_ddtf) and os.path.exists(cache_labels):
-        return np.load(cache_ddtf), np.load(cache_labels, allow_pickle=True)
-        
-    epochs = clean_epochs(mne.io.read_epochs_eeglab(filepath, verbose=False))
-    ch_names = epochs.ch_names
-    data = epochs.get_data(copy=False)
-    
-    if use_rois:
-        roi_data = aggregate_channels_to_rois(data, ch_names, parameters.ROIS, method=roi_method)
-        ddtf = process_dDTF_multivariate_rois(roi_data, sampling_freq=sampling_freq, p=p)
-        labels = np.array(parameters.ROI_NAMES, dtype=object)
-    else:
-        ddtf = process_dDTF_global(data, sampling_freq=sampling_freq, p=p)
-        labels = np.array(ch_names, dtype=object)
-        
-    np.save(cache_ddtf, ddtf)
-    np.save(cache_labels, labels)
-    
-    return ddtf, labels
+
+    # 'mt' = MVAR multi-ensayo; invalida los cachés por época a 500 Hz
+    cache_file = f"{cache_dir}/{stem}_fs{int(parameters.FS_TARGET)}_p{p}_{roi_method}_mt.npz"
+    if os.path.exists(cache_file):
+        cached = np.load(cache_file)
+        return {k: cached[k] for k in cached.files}
+
+    roi_data = load_roi_epochs(filepath, parameters.ROIS, method=roi_method)
+    fit = fit_mvar_multitrial(roi_data, p)
+    result = {
+        'ddtf': ddtf_from_mvar(fit['A'], fit['V'], parameters.FS_TARGET),
+        'max_root': np.float64(fit['max_root']),
+        'n_obs': np.int64(fit['n_obs']),
+        'n_epochs': np.int64(roi_data.shape[0]),
+    }
+    np.savez(cache_file, **result)
+    return result

@@ -14,28 +14,45 @@ DROPPED_CHANNELS = [f"E{channel}" for channel in DROPPED_CHANNELS_MATLAB]
 # Añadimos Cz u otros canales extraños si es necesario descartarlos
 DROPPED_CHANNELS.append("Cz")
 
-EPOCH_DURATION_S = 0.5
-EPOCH_OVERLAP_S = 0
+# ==============================================================================
+# PREPROCESAMIENTO
+# ==============================================================================
+# Los .set vienen a 500 Hz pero con un pasa-bajos previo en ~12 Hz (-65 dB a 13 Hz).
+# Ajustar un MVAR a 500 Hz sobre una señal de ~12 Hz de ancho de banda deja los
+# rezagos casi colineales (raíces en el círculo unitario) y una memoria de solo p * 2 ms.
+# Además, cualquier tramo de banda de rechazo bajo Nyquist hace a la señal casi
+# perfectamente predecible: a 50 Hz ningún MVAR con p >= 6 resultó estable y el BIC
+# decrecía sin mínimo. A 20 Hz (Nyquist 10 Hz, cubre Delta y Theta) todos los modelos
+# son estables y el BIC tiene un mínimo claro.
+FS_ORIGINAL = 500.0
+FS_TARGET = 20.0
+
+# Las épocas son segmentos contiguos de 3 s (evento 'sg'), no bloqueados a un estímulo:
+# el índice de época no tiene significado compartido entre sujetos. Por eso se ajusta
+# UN MVAR por sujeto y condición usando todas las épocas (MVAR multi-ensayo).
+# Cada época se des-tendencia linealmente antes del ajuste (deriva DC / sin pasa-altos).
+DETREND = "linear"
+
+# Solo bandas con señal: Beta y Gamma están en la banda de rechazo del filtro y Alpha
+# en su pendiente de transición. Delta comienza en 1 Hz porque una época de 3 s apenas
+# contiene 1.5 ciclos de 0.5 Hz.
 F_BANDS = {
-    "Delta": (0.5, 4.0),   # Delta
-    "Theta": (4.0, 8.0),   # Theta
-    "Alpha": (8.0, 12.0),  # Alpha
-    "Beta": (12.0, 30.0), # Beta
-    "Gamma": (30.0, 100.0) # Gamma
+    "Delta": (1.0, 4.0),
+    "Theta": (4.0, 8.0),
 }
-FREQ_STEP = 0.5
+FREQ_STEP = 0.25
 F_MIN = min([b[0] for b in F_BANDS.values()])
 F_MAX = max([b[1] for b in F_BANDS.values()])
 FS_GLOBAL = arange(F_MIN, F_MAX + FREQ_STEP, FREQ_STEP)
 
-# Orden óptimo del modelo MVAR determinado empíricamente mediante model_order.py
-# (Criterio del codo / Elbow criterion sobre las curvas de información AIC y BIC)
-P_OPTIMO = 5
+# Orden del MVAR elegido por BIC sobre el MVAR multi-ensayo
+# a 20 Hz (ver scripts/find_optimal_p.py y plots/mvar_order_selection_mean.json)
+P_OPTIMO = 3
+MAX_P = 15
 
 # ==============================================================================
 # CONFIGURACIÓN DE REGIONS OF INTEREST (ROIs) COMO SUPER-NODOS
 # ==============================================================================
-USE_ROIS = True
 ROI_EXTRACTION_METHOD = "mean"  # Opciones: 'mean' (promedio espacial) o 'pca' (primer componente principal)
 R_ROI_DEFAULT = 9.5  # Radio espacial (cm) sugerido para TFCE entre centroides de ROIs
 
